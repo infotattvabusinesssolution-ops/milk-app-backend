@@ -239,7 +239,16 @@ r.patch('/active-subscriptions/:id/slot', async (req, res) => {
   res.json({ success: true, data: sub });
 });
 
-r.get('/deliveries',async(req,res)=>res.json({success:true,data:await Delivery.find().populate('customer partner product').sort('deliveryDate')}));
+r.get('/deliveries', async(req, res) => {
+  const filter = {};
+  if (req.query.subscriptionId) {
+    filter.subscription = req.query.subscriptionId;
+  }
+  res.json({
+    success: true, 
+    data: await Delivery.find(filter).populate('customer partner product').sort('deliveryDate')
+  });
+});
 r.patch('/deliveries/:id/assign', async (req, res) => {
   const { partnerId } = req.body;
   const status = partnerId ? 'assigned' : 'scheduled';
