@@ -220,6 +220,25 @@ r.patch('/active-subscriptions/:id/assign-partner', async (req, res) => {
   res.json({ success: true, data: sub });
 });
 
+r.patch('/active-subscriptions/:id/slot', async (req, res) => {
+  const { slot } = req.body;
+  const sub = await Subscription.findByIdAndUpdate(
+    req.params.id,
+    { $set: { slot: slot } },
+    { new: true }
+  );
+  
+  if (sub) {
+    // Cascade slot update to all future/pending deliveries
+    await Delivery.updateMany(
+      { subscription: sub._id, status: { $in: ['scheduled', 'assigned', 'rescheduled', 'pending'] } },
+      { $set: { slot: slot } }
+    );
+  }
+  
+  res.json({ success: true, data: sub });
+});
+
 r.get('/deliveries',async(req,res)=>res.json({success:true,data:await Delivery.find().populate('customer partner product').sort('deliveryDate')}));
 r.patch('/deliveries/:id/assign', async (req, res) => {
   const { partnerId } = req.body;
