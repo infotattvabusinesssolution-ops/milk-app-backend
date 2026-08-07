@@ -1,0 +1,3 @@
+import mongoose from 'mongoose';
+const schema=new mongoose.Schema({customer:{type:mongoose.Schema.Types.ObjectId,ref:'User',required:true},subscription:{type:mongoose.Schema.Types.ObjectId,ref:'Subscription',required:true},amount:{type:Number,required:true},currency:{type:String,default:'INR'},cycle:{type:String,enum:['daily','weekly','monthly']},provider:{type:String,default:'razorpay'},providerOrderId:String,providerPaymentId:String,status:{type:String,enum:['created','paid','failed','refunded'],default:'created'},paidAt:Date,metadata:Object},{timestamps:true});
+export const Payment=mongoose.model('Payment',schema);

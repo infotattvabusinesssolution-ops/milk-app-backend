@@ -1,0 +1,13 @@
+import { Router } from 'express';
+import { requireAuth } from '../middleware/auth.js';
+import { Subscription } from '../models/Subscription.js';
+import { Product } from '../models/Product.js';
+import { Payment } from '../models/Payment.js';
+import { ApiError } from '../utils/apiError.js';
+import { createProviderOrder,verifySignature } from '../services/paymentService.js';
+import { generateDeliveriesForPayment } from '../services/deliveryService.js';
+const r=Router();
+r.post('/create-order',requireAuth('customer'),async(req,res)=>{const s=await Subscription.findOne({_id:req.body.subscriptionId,customer:req.auth.id});if(!s)throw new ApiError(404,'Subscription not found');const p=await Product.findById(s.product);const days=s.cycle==='daily'?1:s.cycle==='weekly'?7:30;const amount=p.pricePerUnit*s.quantity*days;const pay=await Payment.create({customer:req.auth.id,subscription:s._id,amount,cycle:s.cycle});const order=await createProviderOrder(amount,pay.id);pay.providerOrderId=order.id;await pay.save();res.status(201).json({success:true,data:{payment:pay,providerOrder:order,keyId:process.env.RAZORPAY_KEY_ID||''}});});
+r.post('/verify',requireAuth('customer'),async(req,res)=>{const {providerOrderId,providerPaymentId,signature}=req.body;const p=await Payment.findOne({providerOrderId,customer:req.auth.id});if(!p)throw new ApiError(404,'Payment not found');if(!verifySignature(providerOrderId,providerPaymentId,signature))throw new ApiError(400,'Payment signature verification failed');p.status='paid';p.providerPaymentId=providerPaymentId;p.paidAt=new Date();await p.save();const deliveries=await generateDeliveriesForPayment(p._id);res.json({success:true,data:{payment:p,deliveriesCreated:deliveries.length}});});
+r.post('/demo-success',requireAuth('customer'),async(req,res)=>{const p=await Payment.findOne({_id:req.body.paymentId,customer:req.auth.id});if(!p)throw new ApiError(404,'Payment not found');p.status='paid';p.providerPaymentId=`demo_pay_${Date.now()}`;p.paidAt=new Date();await p.save();const ds=await generateDeliveriesForPayment(p._id);res.json({success:true,data:{payment:p,deliveriesCreated:ds.length}});});
+export default r;
