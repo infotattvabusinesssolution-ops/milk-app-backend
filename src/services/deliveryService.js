@@ -3,9 +3,9 @@ import { Payment } from '../models/Payment.js';
 import { Subscription } from '../models/Subscription.js';
 
 const atStart=d=>{const x=new Date(d);x.setHours(0,0,0,0);return x;};
-export async function generateDeliveriesForPayment(paymentId){
+export async function generateDeliveriesForPayment(paymentId, force = false){
  const payment=await Payment.findById(paymentId);
- if(!payment||payment.status!=='paid') return [];
+ if(!payment || (!force && payment.status!=='paid')) return [];
  const sub=await Subscription.findById(payment.subscription).populate('customer product');
  if(!sub) return [];
  const days=payment.cycle==='daily'?1:payment.cycle==='weekly'?7:30;

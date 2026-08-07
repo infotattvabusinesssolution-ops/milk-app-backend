@@ -7,6 +7,7 @@ import { Delivery } from '../models/Delivery.js';
 import { Payment } from '../models/Payment.js';
 import { ApiError } from '../utils/apiError.js';
 import { WalletTransaction } from '../models/WalletTransaction.js';
+import { generateDeliveriesForPayment } from '../services/deliveryService.js';
 const r=Router();r.use(requireAuth('customer'));
 r.get('/me',async(req,res)=>res.json({success:true,data:await User.findById(req.auth.id)}));
 r.patch('/me',async(req,res)=>res.json({success:true,data:await User.findByIdAndUpdate(req.auth.id,{$set:req.body},{new:true})}));
@@ -38,23 +39,12 @@ r.post('/checkout', async (req, res) => {
       addressId: addressId,
       cycle: cycle,
       quantity: item.quantity,
+      deliveryFrequency: item.deliveryFrequency || 'everyday',
+      selectedDays: item.selectedDays || [],
       startDate: new Date(Date.now() + 86400000), // Start tomorrow
       status: paymentMethod === 'cod' ? 'active' : 'pending_payment'
     });
     createdSubscriptions.push(sub);
-
-    // If COD, generate the delivery immediately for tomorrow
-    if (paymentMethod === 'cod') {
-      await Delivery.create({
-        customer: req.auth.id,
-        subscription: sub._id,
-        product: item.product._id,
-        deliveryDate: new Date(Date.now() + 86400000),
-        quantity: item.quantity,
-        payment: sub._id, // We'll update this below
-        addressSnapshot: u.addresses.id(addressId) // Keep snapshot of address
-      });
-    }
   }
 
   const pay = await Payment.create({
@@ -84,33 +74,11 @@ r.post('/checkout', async (req, res) => {
     pay.status = 'paid';
     await pay.save();
     
-    // Update subscriptions to active
-    await Subscription.updateMany(
-      { _id: { $in: createdSubscriptions.map(s => s._id) } },
-      { $set: { status: 'active' } }
-    );
-    
-    // Also create deliveries for tomorrow if paid via wallet
-    for (const item of items) {
-      const subId = createdSubscriptions.find(s => s.product.toString() === item.product._id.toString())._id;
-      await Delivery.create({
-        customer: req.auth.id,
-        subscription: subId,
-        product: item.product._id,
-        deliveryDate: new Date(Date.now() + 86400000),
-        quantity: item.quantity,
-        payment: pay._id,
-        addressSnapshot: u.addresses.id(addressId)
-      });
-    }
-  }
-
-  // Update deliveries with actual payment ID
-  if (paymentMethod === 'cod') {
-    await Delivery.updateMany(
-      { subscription: { $in: createdSubscriptions.map(s => s._id) } },
-      { $set: { payment: pay._id } }
-    );
+    // Generate full cycle of deliveries
+    await generateDeliveriesForPayment(pay._id, true);
+  } else if (paymentMethod === 'cod') {
+    // Generate full cycle of deliveries for COD
+    await generateDeliveriesForPayment(pay._id, true);
   }
 
   res.status(201).json({ success: true, data: { payment: pay, subscriptions: createdSubscriptions } });
