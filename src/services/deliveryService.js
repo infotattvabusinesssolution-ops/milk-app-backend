@@ -13,6 +13,15 @@ export async function generateDeliveriesForPayment(paymentId){
  const docs=[];
   for(let i=0;i<days;i++){
     const date=atStart(sub.startDate); date.setDate(date.getDate()+i);
+    
+    // Delivery Frequency Check
+    if (sub.deliveryFrequency === 'selected_days' && sub.selectedDays && sub.selectedDays.length > 0) {
+      const weekday = date.toLocaleDateString('en-US', { weekday: 'long' });
+      if (!sub.selectedDays.includes(weekday)) {
+        continue; // Skip this day
+      }
+    }
+
     const exists=await Delivery.findOne({subscription:sub._id,deliveryDate:date});
     if(exists) continue;
     docs.push(await Delivery.create({

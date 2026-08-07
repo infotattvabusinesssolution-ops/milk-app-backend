@@ -11,6 +11,8 @@ const schema = new mongoose.Schema({
   paidUntil: Date,
   nextPaymentDate: Date,
   status: { type: String, enum: ['pending_payment', 'active', 'paused', 'expired', 'cancelled'], default: 'pending_payment' },
+  deliveryFrequency: { type: String, enum: ['everyday', 'selected_days'], default: 'everyday' },
+  selectedDays: [{ type: String, enum: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] }],
   pauseFrom: Date,
   pauseTo: Date,
   skipDates: [Date],
