@@ -261,6 +261,13 @@ r.patch('/deliveries/:id/assign', async (req, res) => {
     )
   });
 });
+r.patch('/deliveries/:id/slot', async (req, res) => {
+  const { slot } = req.body;
+  res.json({
+    success: true,
+    data: await Delivery.findByIdAndUpdate(req.params.id, { $set: { slot } }, { new: true })
+  });
+});
 r.patch('/deliveries/:id/reschedule', async (req, res) => {
   const { deliveryDate, slot } = req.body;
   res.json({
