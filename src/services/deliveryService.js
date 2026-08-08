@@ -51,6 +51,9 @@ export async function generateRemainingDeliveries(subscriptionId, resumeDate, re
   const address = sub.customer.addresses.id(sub.addressId);
   const docs = [];
   
+  const latestPayment = await Payment.findOne({ subscription: sub._id }).sort('-createdAt');
+  if (!latestPayment) return []; // Safety check
+
   let i = 0;
   let added = 0;
   let currentDate = atStart(resumeDate);
@@ -80,7 +83,7 @@ export async function generateRemainingDeliveries(subscriptionId, resumeDate, re
       quantity: sub.quantity,
       slot: sub.slot,
       addressSnapshot: address?.toObject() || {},
-      payment: null,
+      payment: latestPayment._id,
       otp: String(Math.floor(1000+Math.random()*9000)),
       partner: sub.assignedPartner || null,
       status: sub.assignedPartner ? 'assigned' : 'scheduled'
