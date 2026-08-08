@@ -8,6 +8,7 @@ import { Subscription } from '../models/Subscription.js';
 import { Payment } from '../models/Payment.js';
 import { Category } from '../models/Category.js';
 import { upload } from '../config/cloudinary.js';
+import { generateRemainingDeliveries } from '../services/deliveryService.js';
 
 const r=Router();r.use(requireAuth('admin'));
 
@@ -250,7 +251,54 @@ r.patch('/active-subscriptions/:id/assign-partner', async (req, res) => {
       d.slot = slot;
       await d.save();
     }
+
+    res.json({ success: true, data: sub });
+  });
+
+  r.patch('/active-subscriptions/:id/pause', async (req, res) => {
+    const { pauseFrom } = req.body;
+    if (!pauseFrom) return res.status(400).json({ success: false, message: 'pauseFrom date is required' });
     
+    const pauseDate = new Date(pauseFrom);
+    pauseDate.setHours(0,0,0,0);
+  
+    const sub = await Subscription.findById(req.params.id);
+    if (!sub) return res.status(404).json({ success: false, message: 'Subscription not found' });
+    if (sub.status === 'paused') return res.status(400).json({ success: false, message: 'Already paused' });
+  
+    const deletedDeliveries = await Delivery.deleteMany({
+      subscription: sub._id,
+      deliveryDate: { $gte: pauseDate },
+      status: { $in: ['scheduled', 'assigned'] }
+    });
+  
+    sub.status = 'paused';
+    sub.pauseFrom = pauseDate;
+    sub.remainingDeliveries += deletedDeliveries.deletedCount || 0;
+    await sub.save();
+  
+    res.json({ success: true, data: sub });
+  });
+  
+  r.patch('/active-subscriptions/:id/resume', async (req, res) => {
+    const { resumeDate } = req.body;
+    const resumeD = resumeDate ? new Date(resumeDate) : new Date(Date.now() + 86400000);
+    resumeD.setHours(0,0,0,0);
+  
+    const sub = await Subscription.findById(req.params.id);
+    if (!sub) return res.status(404).json({ success: false, message: 'Subscription not found' });
+    if (sub.status !== 'paused') return res.status(400).json({ success: false, message: 'Not paused' });
+  
+    if (sub.remainingDeliveries > 0) {
+      await generateRemainingDeliveries(sub._id, resumeD, sub.remainingDeliveries);
+    }
+  
+    sub.status = 'active';
+    sub.pauseFrom = undefined;
+    sub.pauseTo = undefined;
+    sub.remainingDeliveries = 0;
+    await sub.save();
+  
     res.json({ success: true, data: sub });
   });
 

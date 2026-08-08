@@ -43,3 +43,56 @@ export async function generateDeliveriesForPayment(paymentId, force = false){
  sub.paidUntil=paidUntil; sub.nextPaymentDate=new Date(paidUntil.getTime()+86400000); sub.status='active'; await sub.save();
  return docs;
 }
+
+export async function generateRemainingDeliveries(subscriptionId, resumeDate, remainingCount) {
+  const sub = await Subscription.findById(subscriptionId).populate('customer product');
+  if (!sub || remainingCount <= 0) return [];
+  
+  const address = sub.customer.addresses.id(sub.addressId);
+  const docs = [];
+  
+  let i = 0;
+  let added = 0;
+  let currentDate = atStart(resumeDate);
+  let lastDeliveryDate = currentDate;
+
+  while (added < remainingCount) {
+    const date = new Date(currentDate);
+    date.setDate(date.getDate() + i);
+    i++;
+
+    // Delivery Frequency Check
+    if (sub.deliveryFrequency === 'selected_days' && sub.selectedDays && sub.selectedDays.length > 0) {
+      const weekday = date.toLocaleDateString('en-US', { weekday: 'long' });
+      if (!sub.selectedDays.includes(weekday)) {
+        continue;
+      }
+    }
+
+    const exists = await Delivery.findOne({ subscription: sub._id, deliveryDate: date });
+    if (exists) continue;
+
+    const delivery = await Delivery.create({
+      customer: sub.customer._id,
+      subscription: sub._id,
+      product: sub.product._id,
+      deliveryDate: date,
+      quantity: sub.quantity,
+      slot: sub.slot,
+      addressSnapshot: address?.toObject() || {},
+      payment: null,
+      otp: String(Math.floor(1000+Math.random()*9000)),
+      partner: sub.assignedPartner || null,
+      status: sub.assignedPartner ? 'assigned' : 'scheduled'
+    });
+    docs.push(delivery);
+    added++;
+    lastDeliveryDate = date;
+  }
+
+  sub.endDate = lastDeliveryDate;
+  sub.paidUntil = lastDeliveryDate;
+  sub.nextPaymentDate = new Date(lastDeliveryDate.getTime() + 86400000);
+  await sub.save();
+  return docs;
+}

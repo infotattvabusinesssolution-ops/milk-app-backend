@@ -7,8 +7,17 @@ import { Delivery } from '../models/Delivery.js';
 import { Payment } from '../models/Payment.js';
 import { ApiError } from '../utils/apiError.js';
 import { WalletTransaction } from '../models/WalletTransaction.js';
-import { generateDeliveriesForPayment } from '../services/deliveryService.js';
+import { generateDeliveriesForPayment, generateRemainingDeliveries } from '../services/deliveryService.js';
+import Razorpay from 'razorpay';
+import crypto from 'crypto';
+
 const r=Router();r.use(requireAuth('customer'));
+
+const razorpay = new Razorpay({
+  key_id: 'rzp_test_TNGAVgWuOfX68B',
+  key_secret: 'twkCiFi47zroT64w4240O3Ce'
+});
+
 r.get('/me',async(req,res)=>res.json({success:true,data:await User.findById(req.auth.id)}));
 r.patch('/me',async(req,res)=>res.json({success:true,data:await User.findByIdAndUpdate(req.auth.id,{$set:req.body},{new:true})}));
 r.post('/addresses',async(req,res)=>{const u=await User.findById(req.auth.id);u.addresses.push(req.body);await u.save();res.status(201).json({success:true,data:u.addresses.at(-1)});});
@@ -26,7 +35,11 @@ r.post('/checkout', async (req, res) => {
 
   let totalAmount = 0;
   for (const item of items) {
-    totalAmount += (item.price * item.quantity);
+    if (item.totalAmount) {
+      totalAmount += item.totalAmount;
+    } else {
+      totalAmount += (item.price * item.quantity);
+    }
   }
 
   if (paymentMethod === 'wallet' && u.walletBalance < totalAmount) {
@@ -43,11 +56,13 @@ r.post('/checkout', async (req, res) => {
       customer: req.auth.id,
       product: item.product._id,
       addressId: addressId,
-      cycle: cycle,
+      cycle: item.plan?.cycle || cycle,
       quantity: item.quantity,
       deliveryFrequency: item.deliveryFrequency || 'everyday',
       selectedDays: item.selectedDays || [],
-      startDate: new Date(Date.now() + 86400000), // Start tomorrow
+      startDate: item.startDate ? new Date(item.startDate) : new Date(Date.now() + 86400000), // Start tomorrow by default
+      endDate: item.endDate ? new Date(item.endDate) : undefined,
+      totalAmount: item.totalAmount,
       status: paymentMethod === 'cod' ? 'active' : 'pending_payment'
     });
     createdSubscriptions.push(sub);
@@ -83,17 +98,111 @@ r.post('/checkout', async (req, res) => {
     // Generate full cycle of deliveries for COD
     await generateDeliveriesForPayment(pay._id, true);
   } else if (paymentMethod === 'card') {
-    // Mock card payment success
-    pay.status = 'paid';
-    await pay.save();
-    await generateDeliveriesForPayment(pay._id, true);
+    // Create Razorpay Order
+      const options = {
+        amount: Math.round(totalAmount * 100), // Razorpay works in paise and strictly requires integers
+        currency: "INR",
+        receipt: pay._id.toString()
+      };
+    
+    try {
+      const order = await razorpay.orders.create(options);
+      return res.status(201).json({ 
+        success: true, 
+        data: { 
+          payment: pay, 
+          subscriptions: createdSubscriptions,
+          razorpayOrderId: order.id,
+          amount: options.amount
+        } 
+      });
+    } catch (err) {
+      console.error('Razorpay Error:', err);
+      throw new ApiError(500, 'Failed to create payment order');
+    }
   }
 
   res.status(201).json({ success: true, data: { payment: pay, subscriptions: createdSubscriptions } });
 });
+
+r.post('/payment/verify', async (req, res) => {
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, paymentId } = req.body;
+  
+  const body = razorpay_order_id + "|" + razorpay_payment_id;
+  const expectedSignature = crypto
+    .createHmac("sha256", 'twkCiFi47zroT64w4240O3Ce')
+    .update(body.toString())
+    .digest("hex");
+    
+  if (expectedSignature === razorpay_signature) {
+    const pay = await Payment.findById(paymentId);
+    if (!pay) throw new ApiError(404, 'Payment not found');
+    
+    pay.status = 'paid';
+    await pay.save();
+    
+    // Activate subscriptions
+    await Subscription.updateMany(
+      { customer: req.auth.id, status: 'pending_payment' },
+      { $set: { status: 'active' } }
+    );
+    
+    // Generate deliveries
+    await generateDeliveriesForPayment(pay._id, true);
+    
+    res.json({ success: true, message: 'Payment verified successfully' });
+  } else {
+    throw new ApiError(400, 'Invalid signature');
+  }
+});
 r.get('/subscriptions',async(req,res)=>res.json({success:true,data:await Subscription.find({customer:req.auth.id, cycle: { $ne: 'onetime' }, status: { $ne: 'pending_payment' }}).populate('product').sort('-createdAt')}));
-r.patch('/subscriptions/:id/pause',async(req,res)=>res.json({success:true,data:await Subscription.findOneAndUpdate({_id:req.params.id,customer:req.auth.id},{$set:{status:'paused',pauseFrom:req.body.pauseFrom,pauseTo:req.body.pauseTo}},{new:true})}));
-r.patch('/subscriptions/:id/resume',async(req,res)=>res.json({success:true,data:await Subscription.findOneAndUpdate({_id:req.params.id,customer:req.auth.id},{$set:{status:'active'},$unset:{pauseFrom:1,pauseTo:1}},{new:true})}));
+r.patch('/subscriptions/:id/pause', async (req, res) => {
+  const { pauseFrom } = req.body;
+  if (!pauseFrom) throw new ApiError(400, 'pauseFrom date is required');
+  
+  const pauseDate = new Date(pauseFrom);
+  pauseDate.setHours(0,0,0,0);
+
+  const sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id });
+  if (!sub) throw new ApiError(404, 'Subscription not found');
+  if (sub.status === 'paused') throw new ApiError(400, 'Already paused');
+
+  // Delete future deliveries
+  const deletedDeliveries = await Delivery.deleteMany({
+    subscription: sub._id,
+    deliveryDate: { $gte: pauseDate },
+    status: { $in: ['scheduled', 'assigned'] }
+  });
+
+  sub.status = 'paused';
+  sub.pauseFrom = pauseDate;
+  sub.remainingDeliveries += deletedDeliveries.deletedCount || 0;
+  await sub.save();
+
+  res.json({ success: true, data: sub });
+});
+
+r.patch('/subscriptions/:id/resume', async (req, res) => {
+  const { resumeDate } = req.body;
+  const resumeD = resumeDate ? new Date(resumeDate) : new Date(Date.now() + 86400000);
+  resumeD.setHours(0,0,0,0);
+
+  const sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id });
+  if (!sub) throw new ApiError(404, 'Subscription not found');
+  if (sub.status !== 'paused') throw new ApiError(400, 'Not paused');
+
+  if (sub.remainingDeliveries > 0) {
+    await generateRemainingDeliveries(sub._id, resumeD, sub.remainingDeliveries);
+  }
+
+  sub.status = 'active';
+  sub.pauseFrom = undefined;
+  sub.pauseTo = undefined;
+  sub.remainingDeliveries = 0;
+  await sub.save();
+
+  res.json({ success: true, data: sub });
+});
 r.patch('/subscriptions/:id/auto-renew',async(req,res)=>res.json({success:true,data:await Subscription.findOneAndUpdate({_id:req.params.id,customer:req.auth.id},{$set:{autoRenew:req.body.autoRenew}},{new:true})}));
 r.post('/subscriptions/:id/renew', async(req,res) => {
   const sub = await Subscription.findOneAndUpdate({_id:req.params.id, customer:req.auth.id}, {$set: {status: 'active', startDate: new Date(Date.now() + 86400000)}}, {new: true});
