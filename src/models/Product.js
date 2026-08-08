@@ -29,6 +29,7 @@ const schema = new mongoose.Schema({
   isFeatured: { type: Boolean, default: false },
   isBestSeller: { type: Boolean, default: false },
   allowSubscription: { type: Boolean, default: true },
+  allowCustomBulk: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
   
   variants: [variantSchema],

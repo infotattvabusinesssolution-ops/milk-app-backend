@@ -25,13 +25,19 @@ r.post('/checkout', async (req, res) => {
   if (!u.addresses.id(addressId)) throw new ApiError(400, 'Invalid address');
 
   let totalAmount = 0;
+  for (const item of items) {
+    totalAmount += (item.price * item.quantity);
+  }
+
+  if (paymentMethod === 'wallet' && u.walletBalance < totalAmount) {
+    throw new ApiError(400, 'Insufficient wallet balance');
+  }
+
   const createdSubscriptions = [];
   
   for (const item of items) {
     const isSub = item.purchaseType === 'subscription';
     const cycle = isSub ? (item.plan?.billingCycle || (item.plan?.frequency?.toLowerCase() === 'daily' ? 'daily' : 'weekly')) : 'onetime';
-    const price = item.price * item.quantity;
-    totalAmount += price;
 
     const sub = await Subscription.create({
       customer: req.auth.id,
@@ -55,9 +61,6 @@ r.post('/checkout', async (req, res) => {
   });
 
   if (paymentMethod === 'wallet') {
-    if (u.walletBalance < totalAmount) {
-      throw new ApiError(400, 'Insufficient wallet balance');
-    }
     
     // Deduct balance
     await User.findByIdAndUpdate(req.auth.id, { $inc: { walletBalance: -totalAmount } });
@@ -79,11 +82,16 @@ r.post('/checkout', async (req, res) => {
   } else if (paymentMethod === 'cod') {
     // Generate full cycle of deliveries for COD
     await generateDeliveriesForPayment(pay._id, true);
+  } else if (paymentMethod === 'card') {
+    // Mock card payment success
+    pay.status = 'paid';
+    await pay.save();
+    await generateDeliveriesForPayment(pay._id, true);
   }
 
   res.status(201).json({ success: true, data: { payment: pay, subscriptions: createdSubscriptions } });
 });
-r.get('/subscriptions',async(req,res)=>res.json({success:true,data:await Subscription.find({customer:req.auth.id, cycle: { $ne: 'onetime' }}).populate('product').sort('-createdAt')}));
+r.get('/subscriptions',async(req,res)=>res.json({success:true,data:await Subscription.find({customer:req.auth.id, cycle: { $ne: 'onetime' }, status: { $ne: 'pending_payment' }}).populate('product').sort('-createdAt')}));
 r.patch('/subscriptions/:id/pause',async(req,res)=>res.json({success:true,data:await Subscription.findOneAndUpdate({_id:req.params.id,customer:req.auth.id},{$set:{status:'paused',pauseFrom:req.body.pauseFrom,pauseTo:req.body.pauseTo}},{new:true})}));
 r.patch('/subscriptions/:id/resume',async(req,res)=>res.json({success:true,data:await Subscription.findOneAndUpdate({_id:req.params.id,customer:req.auth.id},{$set:{status:'active'},$unset:{pauseFrom:1,pauseTo:1}},{new:true})}));
 r.patch('/subscriptions/:id/auto-renew',async(req,res)=>res.json({success:true,data:await Subscription.findOneAndUpdate({_id:req.params.id,customer:req.auth.id},{$set:{autoRenew:req.body.autoRenew}},{new:true})}));
@@ -91,20 +99,18 @@ r.post('/subscriptions/:id/renew', async(req,res) => {
   const sub = await Subscription.findOneAndUpdate({_id:req.params.id, customer:req.auth.id}, {$set: {status: 'active', startDate: new Date(Date.now() + 86400000)}}, {new: true});
   res.json({ success: true, data: sub });
 });
-r.get('/deliveries',async(req,res)=>res.json({success:true,data:await Delivery.find({customer:req.auth.id}).populate('product').populate('partner','name phone').sort('deliveryDate')}));
-r.patch('/deliveries/:id/quantity', async (req, res) => {
-  const { quantity } = req.body;
-  if (!quantity || quantity < 1) throw new ApiError(400, 'Invalid quantity');
-  const d = await Delivery.findOneAndUpdate(
-    { _id: req.params.id, customer: req.auth.id, status: 'scheduled' },
-    { $set: { quantity } },
-    { new: true }
-  );
-  if (!d) throw new ApiError(404, 'Scheduled delivery not found');
-  res.json({ success: true, data: d });
+
+r.delete('/subscriptions/:id', async (req, res) => {
+  const sub = await Subscription.findOneAndDelete({_id: req.params.id, customer: req.auth.id});
+  if(!sub) throw new ApiError(404, 'Subscription not found');
+  await Delivery.deleteMany({ subscription: sub._id, status: { $in: ['scheduled', 'pending', 'rescheduled'] }});
+  res.json({success:true});
 });
 
-r.get('/orders',async(req,res)=>res.json({success:true,data:await Delivery.find({customer:req.auth.id}).populate('product').populate('partner','name phone').sort('-createdAt')}));
+r.get('/deliveries',async(req,res)=>res.json({success:true,data:await Delivery.find({customer:req.auth.id}).populate('product').populate('partner','name phone').sort('deliveryDate')}));
+
+
+r.get('/orders',async(req,res)=>res.json({success:true,data:await Delivery.find({customer:req.auth.id}).populate('product').populate('partner','name phone').populate('subscription', 'cycle').sort('-createdAt')}));
 r.get('/payments',async(req,res)=>res.json({success:true,data:await Payment.find({customer:req.auth.id}).sort('-createdAt')}));
 
 // Wallet endpoints

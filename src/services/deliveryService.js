@@ -8,7 +8,8 @@ export async function generateDeliveriesForPayment(paymentId, force = false){
  if(!payment || (!force && payment.status!=='paid')) return [];
  const sub=await Subscription.findById(payment.subscription).populate('customer product');
  if(!sub) return [];
- const days=payment.cycle==='daily'?1:payment.cycle==='weekly'?7:30;
+  const cycle = sub.cycle || 'monthly';
+  const days = cycle === 'daily' ? 1 : cycle === 'weekly' ? 7 : cycle === 'onetime' ? 1 : 30;
  const address=sub.customer.addresses.id(sub.addressId);
  const docs=[];
   for(let i=0;i<days;i++){

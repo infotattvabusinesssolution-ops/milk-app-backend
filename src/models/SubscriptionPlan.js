@@ -15,9 +15,10 @@ const schema = new mongoose.Schema({
   durationDays: { type: Number },
   
   // Frequency Configuration
-  frequency: { type: String, enum: ['One Time', 'Everyday', 'Selected Days'], required: true },
+  frequency: { type: String, enum: ['Everyday', 'Selected Weekdays', 'Weekly', 'Monthly'], required: true },
   selectedWeekdays: [{ type: String, enum: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] }],
-  billingCycle: { type: String, enum: ['daily', 'weekly', 'monthly', 'onetime'], default: 'monthly' },
+  maxDaysPerWeek: { type: Number },
+  billingCycle: { type: String, enum: ['weekly', 'monthly'], default: 'monthly' },
   
   // Financials
   originalPrice: { type: Number, required: true },

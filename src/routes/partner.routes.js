@@ -2,8 +2,18 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { Delivery } from '../models/Delivery.js';
 import { PartnerProfile } from '../models/PartnerProfile.js';
+import { User } from '../models/User.js';
 import { ApiError } from '../utils/apiError.js';
+import { upload } from '../config/cloudinary.js';
+
 const r=Router();r.use(requireAuth('partner'));
+
+r.post('/profile-pic', upload.single('image'), async (req, res) => {
+  if (!req.file) throw new ApiError(400, 'No image file provided');
+  const user = await User.findByIdAndUpdate(req.auth.id, { $set: { profilePic: req.file.path } }, { new: true });
+  res.json({ success: true, data: user });
+});
+
 r.get('/profile',async(req,res)=>res.json({success:true,data:await PartnerProfile.findOneAndUpdate({user:req.auth.id},{$setOnInsert:{user:req.auth.id}},{new:true,upsert:true})}));
 r.patch('/availability',async(req,res)=>res.json({success:true,data:await PartnerProfile.findOneAndUpdate({user:req.auth.id},{$set:{online:!!req.body.online}},{new:true,upsert:true})}));
 r.get('/deliveries',async(req,res)=>{const q=req.query.status?{partner:req.auth.id,status:req.query.status}:{partner:req.auth.id};res.json({success:true,data:await Delivery.find(q).populate('customer product').sort('deliveryDate')});});

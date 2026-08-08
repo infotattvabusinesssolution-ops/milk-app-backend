@@ -135,7 +135,7 @@ r.post('/products', upload.array('images', 5), async(req,res)=>{
   if (typeof productData.variants === 'string') {
     try { productData.variants = JSON.parse(productData.variants); } catch(e){}
   }
-  ['isFeatured', 'isBestSeller', 'allowSubscription', 'isActive'].forEach(field => {
+  ['isFeatured', 'isBestSeller', 'allowSubscription', 'allowCustomBulk', 'isActive'].forEach(field => {
     if (productData[field] === 'true') productData[field] = true;
     if (productData[field] === 'false') productData[field] = false;
   });
@@ -151,7 +151,7 @@ r.patch('/products/:id', upload.array('images', 5), async(req,res)=>{
   if (typeof updateData.variants === 'string') {
     try { updateData.variants = JSON.parse(updateData.variants); } catch(e){}
   }
-  ['isFeatured', 'isBestSeller', 'allowSubscription', 'isActive'].forEach(field => {
+  ['isFeatured', 'isBestSeller', 'allowSubscription', 'allowCustomBulk', 'isActive'].forEach(field => {
     if (updateData[field] === 'true') updateData[field] = true;
     if (updateData[field] === 'false') updateData[field] = false;
   });
@@ -197,7 +197,7 @@ r.delete('/subscription-plans/:id', async (req, res) => {
 r.get('/active-subscriptions', async (req, res) => {
   res.json({
     success: true,
-    data: await Subscription.find().populate('customer product assignedPartner').sort('-createdAt')
+    data: await Subscription.find({ cycle: { $ne: 'onetime' }, status: { $ne: 'pending_payment' } }).populate('customer product assignedPartner').sort('-createdAt')
   });
 });
 
@@ -215,29 +215,44 @@ r.patch('/active-subscriptions/:id/assign-partner', async (req, res) => {
       { subscription: sub._id, status: { $in: ['scheduled', 'rescheduled', 'pending'] } },
       { $set: { partner: partnerId || null, status: partnerId ? 'assigned' : 'scheduled' } }
     );
+
+    if (partnerId && req.app.get('io')) {
+      req.app.get('io').emit('partner:notified', {
+        partnerId,
+        subscriptionId: sub._id,
+        message: 'You have been permanently assigned to a new subscription.'
+      });
+    }
   }
   
   res.json({ success: true, data: sub });
 });
 
-r.patch('/active-subscriptions/:id/slot', async (req, res) => {
-  const { slot } = req.body;
-  const sub = await Subscription.findByIdAndUpdate(
-    req.params.id,
-    { $set: { slot: slot } },
-    { new: true }
-  );
-  
-  if (sub) {
+  r.patch('/active-subscriptions/:id/slot', async (req, res) => {
+    const { slot } = req.body;
+    const sub = await Subscription.findById(req.params.id);
+    if (!sub) return res.status(404).json({ success: false, message: 'Subscription not found' });
+    
+    sub.slot = slot;
+    await sub.save();
+    
     // Cascade slot update to all future/pending deliveries
-    await Delivery.updateMany(
-      { subscription: sub._id, status: { $in: ['scheduled', 'assigned', 'rescheduled', 'pending'] } },
-      { $set: { slot: slot } }
-    );
-  }
-  
-  res.json({ success: true, data: sub });
-});
+    const deliveries = await Delivery.find({ 
+      subscription: sub._id, 
+      status: { $in: ['scheduled', 'assigned', 'rescheduled', 'pending'] } 
+    });
+    
+    for (const d of deliveries) {
+      const isFirstAllocation = !d.slot || d.slot === 'Pending Allocation';
+      if (!isFirstAllocation && d.slot !== slot && ['scheduled', 'assigned', 'picked_up', 'out_for_delivery'].includes(d.status)) {
+        d.status = 'rescheduled';
+      }
+      d.slot = slot;
+      await d.save();
+    }
+    
+    res.json({ success: true, data: sub });
+  });
 
 r.get('/deliveries', async(req, res) => {
   const filter = {};
@@ -246,27 +261,96 @@ r.get('/deliveries', async(req, res) => {
   }
   res.json({
     success: true, 
-    data: await Delivery.find(filter).populate('customer partner product').sort('deliveryDate')
+    data: await Delivery.find(filter).populate('customer partner product subscription payment').sort('deliveryDate')
   });
+});
+
+r.patch('/deliveries/:id', async (req, res) => {
+  const { status, adminNote, deliveryDate, slot, failureReason } = req.body;
+  const updateData = {};
+  
+  if (status !== undefined) updateData.status = status;
+  if (adminNote !== undefined) updateData.adminNote = adminNote;
+  if (deliveryDate !== undefined) updateData.deliveryDate = deliveryDate;
+  if (slot !== undefined) updateData.slot = slot;
+  if (failureReason !== undefined) updateData.failureReason = failureReason;
+
+  if (status === 'delivered') updateData.deliveredAt = new Date();
+
+  const delivery = await Delivery.findByIdAndUpdate(
+    req.params.id,
+    { $set: updateData },
+    { new: true }
+  ).populate('customer partner product subscription payment');
+
+  res.json({ success: true, data: delivery });
 });
 r.patch('/deliveries/:id/assign', async (req, res) => {
   const { partnerId } = req.body;
   const status = partnerId ? 'assigned' : 'scheduled';
+  
+  const delivery = await Delivery.findByIdAndUpdate(
+    req.params.id,
+    { $set: { partner: partnerId || null, status } },
+    { new: true }
+  );
+
+  if (delivery && partnerId && req.app.get('io')) {
+    req.app.get('io').emit('partner:notified', {
+      partnerId,
+      deliveryId: delivery._id,
+      message: `You have been assigned a new delivery for ${new Date(delivery.deliveryDate).toLocaleDateString()}`
+    });
+  }
+
   res.json({
     success: true,
-    data: await Delivery.findByIdAndUpdate(
-      req.params.id,
-      { $set: { partner: partnerId || null, status } },
-      { new: true }
-    )
+    data: delivery
   });
 });
-r.patch('/deliveries/:id/slot', async (req, res) => {
-  const { slot } = req.body;
+
+r.patch('/deliveries/:id/note', async (req, res) => {
+  const { adminNote } = req.body;
+  const delivery = await Delivery.findByIdAndUpdate(
+    req.params.id,
+    { $set: { adminNote } },
+    { new: true }
+  ).populate('customer partner product subscription payment');
+  
   res.json({
     success: true,
-    data: await Delivery.findByIdAndUpdate(req.params.id, { $set: { slot } }, { new: true })
+    data: delivery
   });
+});
+
+  r.patch('/deliveries/:id/slot', async (req, res) => {
+    const { slot } = req.body;
+    const delivery = await Delivery.findById(req.params.id);
+    if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found' });
+    
+    const isFirstAllocation = !delivery.slot || delivery.slot === 'Pending Allocation';
+    if (!isFirstAllocation && delivery.slot !== slot && ['scheduled', 'assigned', 'picked_up', 'out_for_delivery'].includes(delivery.status)) {
+      delivery.status = 'rescheduled';
+    }
+    delivery.slot = slot;
+    await delivery.save();
+    
+    res.json({
+      success: true,
+      data: delivery
+    });
+  });
+r.patch('/deliveries/:id/status', async (req, res) => {
+  const allowed = ['picked_up', 'out_for_delivery', 'delivered', 'failed', 'rescheduled'];
+  if (!allowed.includes(req.body.status)) throw new ApiError(400, 'Invalid status');
+  const d = await Delivery.findById(req.params.id);
+  if (!d) throw new ApiError(404, 'Delivery not found');
+  d.status = req.body.status;
+  d.failureReason = req.body.failureReason;
+  d.adminNote = ''; // Clear admin note when status naturally progresses
+  if (d.status === 'delivered') d.deliveredAt = new Date();
+  await d.save();
+  res.json({ success: true, data: d });
 });
 r.patch('/deliveries/:id/reschedule', async (req, res) => {
   const { deliveryDate, slot } = req.body;

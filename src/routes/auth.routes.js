@@ -20,13 +20,15 @@ r.post('/firebase-sync', async (req, res) => {
   if (!u && phone) u = await User.findOne({ phone });
 
   if (!u) {
-    u = await User.create({ 
+    const userData = { 
       email, 
-      phone, 
       name: name || 'Customer', 
       role: 'customer', 
       isEmailVerified: !!email 
-    });
+    };
+    if (phone) userData.phone = phone;
+    
+    u = await User.create(userData);
   } else {
     // Update existing user with new info if provided
     let updated = false;

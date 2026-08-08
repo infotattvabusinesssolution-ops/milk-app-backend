@@ -14,6 +14,9 @@ const io = new Server(server, {
   }
 });
 
+// Attach io to the Express app so routes can use it
+app.set('io', io);
+
 // Socket.io logic
 io.on('connection', (socket) => {
   console.log(`Socket connected: ${socket.id}`);
