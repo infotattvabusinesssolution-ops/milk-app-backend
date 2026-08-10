@@ -7,6 +7,9 @@ import { Delivery } from '../models/Delivery.js';
 import { Subscription } from '../models/Subscription.js';
 import { Payment } from '../models/Payment.js';
 import { Category } from '../models/Category.js';
+import { SystemConfig } from '../models/SystemConfig.js';
+import { FarmerProfile } from '../models/FarmerProfile.js';
+import { MilkSale } from '../models/MilkSale.js';
 import { upload } from '../config/cloudinary.js';
 import { generateRemainingDeliveries } from '../services/deliveryService.js';
 
@@ -256,51 +259,59 @@ r.patch('/active-subscriptions/:id/assign-partner', async (req, res) => {
   });
 
   r.patch('/active-subscriptions/:id/pause', async (req, res) => {
-    const { pauseFrom } = req.body;
-    if (!pauseFrom) return res.status(400).json({ success: false, message: 'pauseFrom date is required' });
+      const { pauseFrom } = req.body;
+      if (!pauseFrom) return res.status(400).json({ success: false, message: 'pauseFrom date is required' });
+      
+      const pauseDate = new Date(pauseFrom);
+      pauseDate.setHours(0,0,0,0);
     
-    const pauseDate = new Date(pauseFrom);
-    pauseDate.setHours(0,0,0,0);
-  
-    const sub = await Subscription.findById(req.params.id);
-    if (!sub) return res.status(404).json({ success: false, message: 'Subscription not found' });
-    if (sub.status === 'paused') return res.status(400).json({ success: false, message: 'Already paused' });
-  
-    const deletedDeliveries = await Delivery.deleteMany({
-      subscription: sub._id,
-      deliveryDate: { $gte: pauseDate },
-      status: { $in: ['scheduled', 'assigned'] }
+      const sub = await Subscription.findById(req.params.id);
+      if (!sub) return res.status(404).json({ success: false, message: 'Subscription not found' });
+      if (sub.status === 'paused') return res.status(400).json({ success: false, message: 'Already paused' });
+      
+      const updateRes = await Subscription.updateOne(
+        { _id: sub._id, status: 'active' },
+        { $set: { status: 'paused', pauseFrom: pauseDate } }
+      );
+      if (updateRes.modifiedCount === 0) return res.status(400).json({ success: false, message: 'Subscription was already paused' });
+    
+      const deletedDeliveries = await Delivery.deleteMany({
+        subscription: sub._id,
+        deliveryDate: { $gte: pauseDate },
+        status: { $in: ['scheduled', 'assigned'] }
+      });
+    
+      await Subscription.updateOne(
+        { _id: sub._id },
+        { $inc: { remainingDeliveries: deletedDeliveries.deletedCount || 0 } }
+      );
+    
+      res.json({ success: true });
     });
   
-    sub.status = 'paused';
-    sub.pauseFrom = pauseDate;
-    sub.remainingDeliveries += deletedDeliveries.deletedCount || 0;
-    await sub.save();
-  
-    res.json({ success: true, data: sub });
-  });
-  
   r.patch('/active-subscriptions/:id/resume', async (req, res) => {
-    const { resumeDate } = req.body;
-    const resumeD = resumeDate ? new Date(resumeDate) : new Date(Date.now() + 86400000);
-    resumeD.setHours(0,0,0,0);
-  
-    const sub = await Subscription.findById(req.params.id);
-    if (!sub) return res.status(404).json({ success: false, message: 'Subscription not found' });
-    if (sub.status !== 'paused') return res.status(400).json({ success: false, message: 'Not paused' });
-  
-    if (sub.remainingDeliveries > 0) {
-      await generateRemainingDeliveries(sub._id, resumeD, sub.remainingDeliveries);
-    }
-  
-    sub.status = 'active';
-    sub.pauseFrom = undefined;
-    sub.pauseTo = undefined;
-    sub.remainingDeliveries = 0;
-    await sub.save();
-  
-    res.json({ success: true, data: sub });
-  });
+      const { resumeDate } = req.body;
+      const resumeD = resumeDate ? new Date(resumeDate) : new Date(Date.now() + 86400000);
+      resumeD.setHours(0,0,0,0);
+    
+      const sub = await Subscription.findById(req.params.id);
+      if (!sub) return res.status(404).json({ success: false, message: 'Subscription not found' });
+      if (sub.status !== 'paused') return res.status(400).json({ success: false, message: 'Not paused' });
+      
+      const remaining = sub.remainingDeliveries;
+      
+      const updateRes = await Subscription.updateOne(
+        { _id: sub._id, status: 'paused' },
+        { $set: { status: 'active', pauseFrom: undefined, pauseTo: undefined, remainingDeliveries: 0 } }
+      );
+      if (updateRes.modifiedCount === 0) return res.status(400).json({ success: false, message: 'Subscription was already resumed' });
+    
+      if (remaining > 0) {
+        await generateRemainingDeliveries(sub._id, resumeD, remaining);
+      }
+    
+      res.json({ success: true });
+    });
 
 r.get('/deliveries', async(req, res) => {
   const filter = {};
@@ -409,4 +420,114 @@ r.patch('/deliveries/:id/reschedule', async (req, res) => {
     }, { new: true })
   });
 });
+
+// --- FARMER MANAGEMENT & CONFIG ---
+
+r.get('/config/milk-rate', async (req, res) => {
+  let rateConfig = await SystemConfig.findOne({ key: 'CURRENT_MILK_RATE' });
+  if (!rateConfig) {
+    rateConfig = await SystemConfig.create({ key: 'CURRENT_MILK_RATE', value: 34, description: 'Milk purchase rate per litre from farmers' });
+  }
+  res.json({ success: true, data: rateConfig.value });
+});
+
+r.put('/config/milk-rate', async (req, res) => {
+  const { rate } = req.body;
+  if (!rate || isNaN(rate)) return res.status(400).json({ success: false, message: 'Valid rate is required' });
+  
+  let rateConfig = await SystemConfig.findOne({ key: 'CURRENT_MILK_RATE' });
+  if (!rateConfig) {
+    rateConfig = await SystemConfig.create({ key: 'CURRENT_MILK_RATE', value: Number(rate), description: 'Milk purchase rate per litre from farmers' });
+  } else {
+    rateConfig.value = Number(rate);
+    await rateConfig.save();
+  }
+  res.json({ success: true, data: rateConfig.value });
+});
+
+r.get('/farmers', async (req, res) => {
+  const farmers = await User.find({ role: 'farmer' }).select('-passwordHash').lean();
+  
+  // Attach profiles
+  for (let f of farmers) {
+    const profile = await FarmerProfile.findOne({ user: f._id }).lean();
+    f.profile = profile || null;
+  }
+  
+  res.json({ success: true, data: farmers });
+});
+
+// --- KYC REQUESTS ---
+
+r.get('/kyc-requests', async (req, res) => {
+  const profiles = await FarmerProfile.find().populate('user', 'email').sort('-createdAt').lean();
+  res.json({ success: true, data: profiles });
+});
+
+r.put('/kyc-requests/:id', async (req, res) => {
+  const { status } = req.body;
+  if (!['approved', 'rejected'].includes(status)) {
+    return res.status(400).json({ success: false, message: 'Invalid status' });
+  }
+  const profile = await FarmerProfile.findByIdAndUpdate(req.params.id, { 'kyc.status': status }, { new: true });
+  if (!profile) return res.status(404).json({ success: false, message: 'Profile not found' });
+  res.json({ success: true, data: profile });
+});
+
+// --- MILK COLLECTIONS ---
+
+r.get('/milk-collections', async (req, res) => {
+  const collections = await MilkSale.find()
+    .populate('farmer', 'name email phone')
+    .sort('-createdAt')
+    .lean();
+    
+  // Attach farmer profile data (address, etc.)
+  for (let c of collections) {
+    if (c.farmer) {
+      const profile = await FarmerProfile.findOne({ user: c.farmer._id }).lean();
+      if (profile) {
+        c.farmer.profile = profile;
+      }
+    }
+  }
+  
+  res.json({ success: true, data: collections });
+});
+
+r.put('/milk-collections/:id/assign', async (req, res) => {
+  const { expectedPickupTime } = req.body;
+  if (!expectedPickupTime) return res.status(400).json({ success: false, message: 'Expected pickup time is required' });
+  
+  const sale = await MilkSale.findById(req.params.id);
+  if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+  if (sale.status !== 'initiated') return res.status(400).json({ success: false, message: 'Can only assign pending collections' });
+  
+  sale.status = 'in_progress';
+  sale.expectedPickupTime = new Date(expectedPickupTime);
+  sale.vendor = req.auth.id; // Assign to admin performing action, or a selected vendor if provided
+  
+  await sale.save();
+  res.json({ success: true, data: sale });
+});
+
+r.put('/milk-collections/:id/verify', async (req, res) => {
+  const { finalQuantity } = req.body;
+  
+  const sale = await MilkSale.findById(req.params.id);
+  if (!sale) return res.status(404).json({ success: false, message: 'Sale not found' });
+  if (sale.status !== 'in_progress') return res.status(400).json({ success: false, message: 'Can only verify in-progress collections' });
+  
+  // Adjust quantity/amount if necessary
+  if (finalQuantity && !isNaN(finalQuantity)) {
+    sale.quantity = Number(finalQuantity);
+    sale.totalAmount = sale.quantity * sale.rateApplied;
+  }
+  
+  sale.status = 'collected';
+  await sale.save();
+  
+  res.json({ success: true, data: sale });
+});
+
 export default r;

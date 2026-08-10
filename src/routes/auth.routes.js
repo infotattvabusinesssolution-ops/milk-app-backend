@@ -10,7 +10,7 @@ const r=Router();
 r.post('/admin-login',async(req,res)=>{const {email,password}=req.body;const u=await User.findOne({email,role:'admin'});if(!u||!await bcrypt.compare(password,u.passwordHash||''))throw new ApiError(401,'Invalid credentials');res.json({success:true,token:signToken({id:u.id,role:u.role}),user:u});});
 
 r.post('/firebase-sync', async (req, res) => {
-  const { email, phone, name } = req.body;
+  const { email, phone, name, role } = req.body;
   if (!email && !phone) throw new ApiError(400, 'Email or Phone is required from Firebase Auth');
   
   let u = undefined;
@@ -20,10 +20,11 @@ r.post('/firebase-sync', async (req, res) => {
   if (!u && phone) u = await User.findOne({ phone });
 
   if (!u) {
+    const defaultRole = (role === 'farmer') ? 'farmer' : 'customer';
     const userData = { 
       email, 
-      name: name || 'Customer', 
-      role: 'customer', 
+      name: name || (defaultRole === 'farmer' ? 'Farmer' : 'Customer'), 
+      role: defaultRole, 
       isEmailVerified: !!email 
     };
     if (phone) userData.phone = phone;
@@ -35,6 +36,7 @@ r.post('/firebase-sync', async (req, res) => {
     if (email && !u.email) { u.email = email; u.isEmailVerified = true; updated = true; }
     if (phone && !u.phone) { u.phone = phone; updated = true; }
     if (name && u.name === 'Customer') { u.name = name; updated = true; }
+    if (role === 'farmer' && u.role === 'customer') { u.role = 'farmer'; updated = true; }
     if (updated) await u.save();
   }
   
