@@ -41,8 +41,29 @@ r.post('/contact', async (req, res) => {
 
 r.get('/config/:key', async (req, res) => {
   const config = await SystemConfig.findOne({ key: req.params.key });
-  if (!config) return res.status(404).json({ success: false, message: 'Config not found' });
-  res.json({ success: true, data: config.value });
+  if (config) return res.json({ success: true, data: config.value });
+  
+  // Provide sensible defaults if not seeded in DB
+  const defaults = {
+    'storeLocation': { lat: 26.4499, lng: 80.3319 },
+    'deliveryChargePerKm': 10,
+    'baseDeliveryFee': 20,
+    'availableStates': 'Uttar Pradesh, Delhi, Maharashtra, Karnataka, Haryana, Punjab, Rajasthan, Madhya Pradesh',
+    'subscriptionConfig': { minDays: 7, maxDays: 90, discountPercent: 5 },
+    'footerContact': { phone: '+91 9876543210', email: 'support@milkmen.online', address: '123 Dairy Road, Kanpur, UP, 208001' },
+    'aboutUs': 'We provide fresh, pure, and unadulterated milk directly from our farms to your doorstep every morning.',
+    'privacyPolicy': 'Your privacy is important to us. We securely store your data and do not share it with third parties.',
+    'faqs': [
+      { q: 'What time do you deliver?', a: 'We deliver between 5:00 AM and 7:00 AM every day.' },
+      { q: 'Is the milk pasteurized?', a: 'No, we provide fresh raw A2 milk. We recommend boiling it before consumption.' }
+    ]
+  };
+  
+  if (defaults[req.params.key] !== undefined) {
+    return res.json({ success: true, data: defaults[req.params.key] });
+  }
+  
+  return res.status(404).json({ success: false, message: 'Config not found' });
 });
 
 export default r;

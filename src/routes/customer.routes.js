@@ -10,6 +10,7 @@ import { ApiError } from '../utils/apiError.js';
 import { WalletTransaction } from '../models/WalletTransaction.js';
 import { SubscriptionPlan } from '../models/SubscriptionPlan.js';
 import { generateDeliveriesForPayment, generateRemainingDeliveries } from '../services/deliveryService.js';
+import { calculateDeliveryCharge } from '../utils/delivery.js';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 
@@ -59,11 +60,69 @@ r.get('/me', async (req, res) => {
 });
 
 r.patch('/me',async(req,res)=>res.json({success:true,data:await User.findByIdAndUpdate(req.auth.id,{$set:req.body},{new:true})}));
+r.get('/addresses',async(req,res)=>{const u=await User.findById(req.auth.id).lean();res.json({success:true,data:u.addresses||[]});});
 r.post('/addresses',async(req,res)=>{const u=await User.findById(req.auth.id);u.addresses.push(req.body);await u.save();res.status(201).json({success:true,data:u.addresses.at(-1)});});
 r.put('/addresses/:id',async(req,res)=>{const u=await User.findById(req.auth.id);const a=u.addresses.id(req.params.id);if(!a)throw new ApiError(404,'Address not found');a.set(req.body);await u.save();res.json({success:true,data:a});});
 r.delete('/addresses/:id',async(req,res)=>{const u=await User.findById(req.auth.id);const a=u.addresses.id(req.params.id);if(!a)throw new ApiError(404,'Address not found');u.addresses.pull(req.params.id);await u.save();res.json({success:true});});
 r.get('/products',async(req,res)=>res.json({success:true,data:await Product.find({isActive:true})}));
 r.post('/subscriptions',async(req,res)=>{const u=await User.findById(req.auth.id);if(!u.addresses.id(req.body.addressId))throw new ApiError(400,'Invalid address');const s=await Subscription.create({...req.body,customer:u._id});res.status(201).json({success:true,data:s});});
+
+r.post('/checkout/calculate', async (req, res) => {
+  let { items, addressId, addressLat, addressLng, useWallet } = req.body;
+  useWallet = useWallet === true;
+
+  if (!items || items.length === 0) return res.status(400).json({ success: false, message: 'Cart is empty' });
+  
+  const u = await User.findById(req.auth.id);
+  let customerAddress = null;
+  if (addressId && addressId !== 'new' && u.addresses.id(addressId)) {
+    customerAddress = u.addresses.id(addressId);
+  } else if (addressLat !== undefined && addressLng !== undefined) {
+    customerAddress = { lat: Number(addressLat), lng: Number(addressLng) };
+  }
+
+  let itemTotal = 0;
+  for (const item of items) {
+    if (!item) continue;
+    const presetPlanId = item.plan?._id;
+    if (presetPlanId) {
+      const storedPlan = await SubscriptionPlan.findOne({ _id: presetPlanId, isActive: true }).lean();
+      if (storedPlan) {
+        itemTotal += Number(storedPlan.finalPayableAmount) || 0;
+      }
+    } else if (item.product?._id) {
+      const qty = Number(item.quantity) || 1;
+      const tAmt = item.totalAmount !== undefined && item.totalAmount !== null ? Number(item.totalAmount) : Number(item.price) * qty;
+      itemTotal += tAmt || 0;
+    }
+  }
+
+  itemTotal = roundMoney(itemTotal);
+
+  let deliveryInfo = { charge: 0, distanceKm: 0 };
+  if (customerAddress) {
+    deliveryInfo = await calculateDeliveryCharge(customerAddress);
+  }
+
+  const totalBeforeWallet = roundMoney(itemTotal + deliveryInfo.charge);
+  let walletDeduction = 0;
+  if (useWallet) {
+    walletDeduction = Math.min(Math.max(0, u.walletBalance), totalBeforeWallet);
+  }
+
+  const finalPayableAmount = roundMoney(totalBeforeWallet - walletDeduction);
+
+  res.json({
+    success: true,
+    data: {
+      itemTotal,
+      deliveryCharge: deliveryInfo.charge,
+      distanceKm: deliveryInfo.distanceKm,
+      walletDeduction,
+      finalPayableAmount
+    }
+  });
+});
 
 r.post('/checkout', async (req, res) => {
   let { items, addressId, paymentMethod, useWallet, isCartCheckout } = req.body;
@@ -154,6 +213,13 @@ r.post('/checkout', async (req, res) => {
 
   items = validatedItems;
 
+  let deliveryInfo = { charge: 0, distanceKm: 0 };
+  if (addressId && u.addresses.id(addressId)) {
+    deliveryInfo = await calculateDeliveryCharge(u.addresses.id(addressId));
+  }
+  
+  totalAmount = roundMoney(totalAmount + deliveryInfo.charge);
+
   let walletDeduction = 0;
   if (useWallet) {
     walletDeduction = Math.min(Math.max(0, u.walletBalance), totalAmount);
@@ -174,9 +240,13 @@ r.post('/checkout', async (req, res) => {
     const isSub = item.purchaseType === 'subscription';
     const cycle = isSub ? (item.plan?.billingCycle || (item.plan?.frequency?.toLowerCase() === 'daily' ? 'daily' : 'weekly')) : 'onetime';
 
-    let finalCycle = item.plan?.cycle || cycle;
-    if (finalCycle.toLowerCase().includes('custom')) {
+    let finalCycle = (item.plan?.cycle || cycle).toLowerCase();
+    if (finalCycle.includes('single day') || finalCycle === 'onetime') {
+      finalCycle = 'onetime';
+    } else if (finalCycle.includes('custom')) {
       finalCycle = 'custom';
+    } else if (!['daily', 'weekly', 'monthly', 'onetime', 'custom'].includes(finalCycle)) {
+      finalCycle = 'onetime';
     }
 
     const rawStartDate = item.startDate || item.plan?.startDate;
@@ -225,6 +295,8 @@ r.post('/checkout', async (req, res) => {
       walletDebited: false,
       payableAmount,
       paymentMethod,
+      deliveryCharge: deliveryInfo.charge,
+      distanceKm: deliveryInfo.distanceKm,
       type: 'checkout'
     }
   });
