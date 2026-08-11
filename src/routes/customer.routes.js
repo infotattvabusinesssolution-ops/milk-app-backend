@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { Product } from '../models/Product.js';
@@ -7,6 +8,7 @@ import { Delivery } from '../models/Delivery.js';
 import { Payment } from '../models/Payment.js';
 import { ApiError } from '../utils/apiError.js';
 import { WalletTransaction } from '../models/WalletTransaction.js';
+import { SubscriptionPlan } from '../models/SubscriptionPlan.js';
 import { generateDeliveriesForPayment, generateRemainingDeliveries } from '../services/deliveryService.js';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
@@ -17,6 +19,38 @@ const razorpay = new Razorpay({
   key_id: 'rzp_test_TNGAVgWuOfX68B',
   key_secret: 'twkCiFi47zroT64w4240O3Ce'
 });
+
+const roundMoney = (amount) => Math.round((Number(amount) + Number.EPSILON) * 100) / 100;
+
+const debitWallet = async ({ customerId, amount, paymentId, description }) => {
+  const debitAmount = roundMoney(amount);
+  if (debitAmount <= 0) return null;
+
+  const updatedUser = await User.findOneAndUpdate(
+    { _id: customerId, walletBalance: { $gte: debitAmount } },
+    { $inc: { walletBalance: -debitAmount } },
+    { new: true }
+  );
+
+  if (!updatedUser) {
+    throw new ApiError(409, 'Wallet balance changed. Please review your balance and try again.');
+  }
+
+  try {
+    await WalletTransaction.create({
+      customer: customerId,
+      amount: debitAmount,
+      type: 'debit',
+      description,
+      referenceId: paymentId
+    });
+  } catch (error) {
+    await User.findByIdAndUpdate(customerId, { $inc: { walletBalance: debitAmount } });
+    throw error;
+  }
+
+  return updatedUser;
+};
 
 r.get('/me', async (req, res) => {
   const user = await User.findById(req.auth.id).lean();
@@ -33,6 +67,11 @@ r.post('/subscriptions',async(req,res)=>{const u=await User.findById(req.auth.id
 
 r.post('/checkout', async (req, res) => {
   let { items, addressId, paymentMethod, useWallet, isCartCheckout } = req.body;
+  useWallet = useWallet === true;
+
+  if (!['wallet', 'cod', 'card'].includes(paymentMethod)) {
+    throw new ApiError(400, 'Invalid payment method');
+  }
   
   if (isCartCheckout) {
     // Forcefully remove any stale subscription items that might be stuck in the user's cart
@@ -58,17 +97,66 @@ r.post('/checkout', async (req, res) => {
   if (!u.addresses.id(addressId)) throw new ApiError(400, 'Invalid address');
 
   let totalAmount = 0;
+  const validatedItems = [];
+
   for (const item of items) {
-    if (item.totalAmount) {
-      totalAmount += item.totalAmount;
+    if (!item) throw new ApiError(400, 'Invalid checkout item');
+
+    let validatedItem = { ...item };
+    const presetPlanId = item.plan?._id;
+
+    if (presetPlanId) {
+      if (!mongoose.isValidObjectId(presetPlanId)) throw new ApiError(400, 'Invalid subscription plan');
+      const storedPlan = await SubscriptionPlan.findOne({ _id: presetPlanId, isActive: true }).lean();
+      if (!storedPlan) throw new ApiError(400, 'Subscription plan is unavailable');
+
+      const storedTotal = Number(storedPlan.finalPayableAmount);
+      if (!Number.isFinite(storedTotal) || storedTotal <= 0) {
+        throw new ApiError(400, 'Subscription plan has invalid pricing');
+      }
+
+      const totalDeliveries = Math.max(1, Number(storedPlan.totalDeliveries) || 1);
+      validatedItem = {
+        ...item,
+        product: { _id: storedPlan.product },
+        quantity: Math.max(1, Number(storedPlan.quantityPerDelivery) || 1),
+        price: roundMoney(storedTotal / totalDeliveries),
+        totalAmount: roundMoney(storedTotal),
+        deliveryFrequency: storedPlan.frequency === 'Selected Weekdays' ? 'selected_days' : 'everyday',
+        selectedDays: storedPlan.frequency === 'Selected Weekdays' ? (storedPlan.selectedWeekdays || []) : [],
+        plan: {
+          ...item.plan,
+          billingCycle: storedPlan.billingCycle,
+          cycle: storedPlan.billingCycle,
+          frequency: storedPlan.frequency,
+          durationDays: storedPlan.durationDays,
+          totalDeliveries
+        }
+      };
     } else {
-      totalAmount += (item.price * item.quantity);
+      if (!item.product?._id) throw new ApiError(400, 'Checkout product is invalid');
+      const quantity = Number(item.quantity);
+      const itemTotal = item.totalAmount !== undefined && item.totalAmount !== null
+        ? Number(item.totalAmount)
+        : Number(item.price) * quantity;
+
+      if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(itemTotal) || itemTotal <= 0) {
+        throw new ApiError(400, 'Checkout item has invalid quantity or pricing');
+      }
+
+      validatedItem.quantity = quantity;
+      validatedItem.totalAmount = roundMoney(itemTotal);
     }
+
+    totalAmount += validatedItem.totalAmount;
+    validatedItems.push(validatedItem);
   }
+
+  items = validatedItems;
 
   let walletDeduction = 0;
   if (useWallet) {
-    walletDeduction = Math.min(u.walletBalance, totalAmount);
+    walletDeduction = Math.min(Math.max(0, u.walletBalance), totalAmount);
   } else if (paymentMethod === 'wallet') {
     if (u.walletBalance < totalAmount) {
       throw new ApiError(400, 'Insufficient wallet balance');
@@ -76,7 +164,9 @@ r.post('/checkout', async (req, res) => {
     walletDeduction = totalAmount;
   }
   
-  const payableAmount = totalAmount - walletDeduction;
+  totalAmount = roundMoney(totalAmount);
+  walletDeduction = roundMoney(walletDeduction);
+  const payableAmount = roundMoney(totalAmount - walletDeduction);
 
   const createdSubscriptions = [];
   
@@ -84,16 +174,41 @@ r.post('/checkout', async (req, res) => {
     const isSub = item.purchaseType === 'subscription';
     const cycle = isSub ? (item.plan?.billingCycle || (item.plan?.frequency?.toLowerCase() === 'daily' ? 'daily' : 'weekly')) : 'onetime';
 
+    let finalCycle = item.plan?.cycle || cycle;
+    if (finalCycle.toLowerCase().includes('custom')) {
+      finalCycle = 'custom';
+    }
+
+    const rawStartDate = item.startDate || item.plan?.startDate;
+    const normalizedStartDate = rawStartDate ? new Date(rawStartDate) : new Date(Date.now() + 86400000);
+    if (Number.isNaN(normalizedStartDate.getTime())) {
+      throw new ApiError(400, 'Subscription start date is invalid');
+    }
+
+    const rawEndDate = item.endDate || item.plan?.endDate;
+    let normalizedEndDate = rawEndDate ? new Date(rawEndDate) : undefined;
+    if (!normalizedEndDate && item.plan?._id) {
+      normalizedEndDate = new Date(normalizedStartDate);
+      const durationDays = Math.max(1, Number(item.plan.durationDays) || Number(item.plan.totalDeliveries) || 1);
+      normalizedEndDate.setDate(normalizedEndDate.getDate() + durationDays - 1);
+    }
+    if (normalizedEndDate && Number.isNaN(normalizedEndDate.getTime())) {
+      throw new ApiError(400, 'Subscription end date is invalid');
+    }
+    if (normalizedEndDate && normalizedEndDate < normalizedStartDate) {
+      throw new ApiError(400, 'Subscription end date must be after the start date');
+    }
+
     const sub = await Subscription.create({
       customer: req.auth.id,
       product: item.product._id,
       addressId: addressId,
-      cycle: item.plan?.cycle || cycle,
+      cycle: finalCycle,
       quantity: item.quantity,
       deliveryFrequency: item.deliveryFrequency || 'everyday',
       selectedDays: item.selectedDays || [],
-      startDate: item.startDate ? new Date(item.startDate) : new Date(Date.now() + 86400000),
-      endDate: item.endDate ? new Date(item.endDate) : undefined,
+      startDate: normalizedStartDate,
+      endDate: normalizedEndDate,
       totalAmount: item.totalAmount,
       status: paymentMethod === 'cod' && payableAmount > 0 ? 'active' : 'pending_payment'
     });
@@ -105,15 +220,25 @@ r.post('/checkout', async (req, res) => {
     subscription: createdSubscriptions[0]._id,
     amount: totalAmount,
     status: 'created',
-    metadata: { walletDeducted: walletDeduction, type: 'checkout' }
+    metadata: {
+      walletDeducted: walletDeduction,
+      walletDebited: false,
+      payableAmount,
+      paymentMethod,
+      type: 'checkout'
+    }
   });
 
   if (payableAmount === 0 || paymentMethod === 'wallet') {
+    let updatedUser = null;
     if (walletDeduction > 0) {
-      await User.findByIdAndUpdate(req.auth.id, { $inc: { walletBalance: -walletDeduction } });
-      await WalletTransaction.create({
-        customer: req.auth.id, amount: walletDeduction, type: 'debit', description: 'Order Payment', referenceId: pay._id
+      updatedUser = await debitWallet({
+        customerId: req.auth.id,
+        amount: walletDeduction,
+        paymentId: pay._id,
+        description: 'Milk Wallet applied to subscription'
       });
+      pay.set('metadata', { ...pay.metadata, walletDebited: true });
     }
     
     pay.status = 'paid';
@@ -124,20 +249,45 @@ r.post('/checkout', async (req, res) => {
       { $set: { status: 'active' } }
     );
     await generateDeliveriesForPayment(pay._id, true);
-    return res.status(201).json({ success: true, data: { payment: pay, subscriptions: createdSubscriptions } });
+    return res.status(201).json({
+      success: true,
+      data: {
+        payment: pay,
+        subscriptions: createdSubscriptions,
+        totalAmount,
+        walletDeduction,
+        payableAmount,
+        walletBalance: updatedUser?.walletBalance ?? u.walletBalance
+      }
+    });
   } else if (paymentMethod === 'cod') {
+    let updatedUser = null;
     if (walletDeduction > 0) {
-      await User.findByIdAndUpdate(req.auth.id, { $inc: { walletBalance: -walletDeduction } });
-      await WalletTransaction.create({
-        customer: req.auth.id, amount: walletDeduction, type: 'debit', description: 'Partial Order Payment', referenceId: pay._id
+      updatedUser = await debitWallet({
+        customerId: req.auth.id,
+        amount: walletDeduction,
+        paymentId: pay._id,
+        description: 'Milk Wallet discount on COD subscription'
       });
+      pay.set('metadata', { ...pay.metadata, walletDebited: true });
+      await pay.save();
     }
     await Subscription.updateMany(
       { customer: req.auth.id, _id: { $in: createdSubscriptions.map(s => s._id) } },
       { $set: { status: 'active' } }
     );
     await generateDeliveriesForPayment(pay._id, true);
-    return res.status(201).json({ success: true, data: { payment: pay, subscriptions: createdSubscriptions } });
+    return res.status(201).json({
+      success: true,
+      data: {
+        payment: pay,
+        subscriptions: createdSubscriptions,
+        totalAmount,
+        walletDeduction,
+        payableAmount,
+        walletBalance: updatedUser?.walletBalance ?? u.walletBalance
+      }
+    });
   } else if (paymentMethod === 'card') {
     const options = {
       amount: Math.round(payableAmount * 100),
@@ -146,9 +296,19 @@ r.post('/checkout', async (req, res) => {
     };
     try {
       const order = await razorpay.orders.create(options);
+      pay.providerOrderId = order.id;
+      await pay.save();
       return res.status(201).json({ 
         success: true, 
-        data: { payment: pay, subscriptions: createdSubscriptions, razorpayOrderId: order.id, amount: options.amount } 
+        data: {
+          payment: pay,
+          subscriptions: createdSubscriptions,
+          razorpayOrderId: order.id,
+          amount: options.amount,
+          totalAmount,
+          walletDeduction,
+          payableAmount
+        }
       });
     } catch (err) {
       console.error('Razorpay Error:', err);
@@ -160,12 +320,15 @@ r.post('/checkout', async (req, res) => {
 // EXTRA MILK ENDPOINT
 r.post('/subscriptions/:id/extra-milk', async (req, res) => {
   const { date, productId, quantity, paymentMethod, useWallet } = req.body;
+  const requestedQuantity = Number(quantity);
   
-  if (!date || !productId || !quantity || !paymentMethod) {
+  if (!date || !productId || !paymentMethod || !Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
     throw new ApiError(400, 'Missing required fields (date, productId, quantity, paymentMethod)');
   }
+  if (!['wallet', 'cod', 'card'].includes(paymentMethod)) throw new ApiError(400, 'Invalid payment method');
   
   const targetDate = new Date(date);
+  if (Number.isNaN(targetDate.getTime())) throw new ApiError(400, 'Invalid delivery date');
   targetDate.setHours(0,0,0,0);
   
   const today = new Date();
@@ -179,35 +342,55 @@ r.post('/subscriptions/:id/extra-milk', async (req, res) => {
 
   const product = await Product.findById(productId);
   if (!product) throw new ApiError(404, 'Product not found.');
-  
-  const totalAmount = product.price * quantity;
+
+  const primaryVariant = product.variants?.[0];
+  const variantPrice = primaryVariant?.salePrice > 0 ? primaryVariant.salePrice : primaryVariant?.regularPrice;
+  const unitPrice = Number(variantPrice ?? product.pricePerUnit);
+  if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+    throw new ApiError(400, 'This product does not have a valid price');
+  }
+
+  const totalAmount = roundMoney(unitPrice * requestedQuantity);
   
   const u = await User.findById(req.auth.id);
   let walletDeduction = 0;
   
-  if (useWallet) {
-    walletDeduction = Math.min(u.walletBalance, totalAmount);
+  if (useWallet === true) {
+    walletDeduction = Math.min(Math.max(0, u.walletBalance), totalAmount);
   } else if (paymentMethod === 'wallet') {
     if (u.walletBalance < totalAmount) throw new ApiError(400, 'Insufficient wallet balance');
     walletDeduction = totalAmount;
   }
   
-  const payableAmount = totalAmount - walletDeduction;
+  walletDeduction = roundMoney(walletDeduction);
+  const payableAmount = roundMoney(totalAmount - walletDeduction);
 
   const pay = await Payment.create({
     customer: req.auth.id,
     subscription: sub._id,
     amount: totalAmount,
     status: 'created',
-    metadata: { walletDeducted: walletDeduction, type: 'extra_milk', productId, quantity, date: targetDate.toISOString() }
+    metadata: {
+      walletDeducted: walletDeduction,
+      walletDebited: false,
+      payableAmount,
+      unitPrice,
+      type: 'extra_milk',
+      productId,
+      quantity: requestedQuantity,
+      date: targetDate.toISOString()
+    }
   });
 
   if (payableAmount === 0 || paymentMethod === 'wallet') {
     if (walletDeduction > 0) {
-      await User.findByIdAndUpdate(req.auth.id, { $inc: { walletBalance: -walletDeduction } });
-      await WalletTransaction.create({
-        customer: req.auth.id, amount: walletDeduction, type: 'debit', description: 'Extra Milk Payment', referenceId: pay._id
+      await debitWallet({
+        customerId: req.auth.id,
+        amount: walletDeduction,
+        paymentId: pay._id,
+        description: 'Extra milk payment from Milk Wallet'
       });
+      pay.set('metadata', { ...pay.metadata, walletDebited: true });
     }
     pay.status = 'paid';
     await pay.save();
@@ -217,39 +400,42 @@ r.post('/subscriptions/:id/extra-milk', async (req, res) => {
       subscription: sub._id,
       product: productId,
       deliveryDate: targetDate,
-      quantity,
+      quantity: requestedQuantity,
       payment: pay._id,
       status: 'scheduled',
       isExtra: true
     });
     
-    return res.status(201).json({ success: true, data: { payment: pay, delivery } });
+    return res.status(201).json({ success: true, data: { payment: pay, delivery, totalAmount, walletDeduction, payableAmount } });
   } else if (paymentMethod === 'cod') {
-    // Currently the UI says "Pay ?112 & Confirm", typically COD might not be allowed for extras, but we'll support it
     if (walletDeduction > 0) {
-      await User.findByIdAndUpdate(req.auth.id, { $inc: { walletBalance: -walletDeduction } });
-      await WalletTransaction.create({
-        customer: req.auth.id, amount: walletDeduction, type: 'debit', description: 'Partial Extra Milk Payment', referenceId: pay._id
+      await debitWallet({
+        customerId: req.auth.id,
+        amount: walletDeduction,
+        paymentId: pay._id,
+        description: 'Milk Wallet discount on extra milk'
       });
+      pay.set('metadata', { ...pay.metadata, walletDebited: true });
+      await pay.save();
     }
     const delivery = await Delivery.create({
       customer: req.auth.id,
       subscription: sub._id,
       product: productId,
       deliveryDate: targetDate,
-      quantity,
+      quantity: requestedQuantity,
       payment: pay._id,
       status: 'scheduled',
       isExtra: true
     });
-    return res.status(201).json({ success: true, data: { payment: pay, delivery } });
+    return res.status(201).json({ success: true, data: { payment: pay, delivery, totalAmount, walletDeduction, payableAmount } });
   } else if (paymentMethod === 'card') {
     const delivery = await Delivery.create({
       customer: req.auth.id,
       subscription: sub._id,
       product: productId,
       deliveryDate: targetDate,
-      quantity,
+      quantity: requestedQuantity,
       payment: pay._id,
       status: 'pending_payment',
       isExtra: true
@@ -262,9 +448,11 @@ r.post('/subscriptions/:id/extra-milk', async (req, res) => {
     };
     try {
       const order = await razorpay.orders.create(options);
+      pay.providerOrderId = order.id;
+      await pay.save();
       return res.status(201).json({ 
         success: true, 
-        data: { payment: pay, delivery, razorpayOrderId: order.id, amount: options.amount } 
+        data: { payment: pay, delivery, razorpayOrderId: order.id, amount: options.amount, totalAmount, walletDeduction, payableAmount } 
       });
     } catch (err) {
       console.error('Razorpay Error:', err);
@@ -281,19 +469,34 @@ r.post('/payment/verify', async (req, res) => {
   const expectedSignature = crypto.createHmac("sha256", 'twkCiFi47zroT64w4240O3Ce').update(body.toString()).digest("hex");
     
   if (expectedSignature === razorpay_signature) {
-    const pay = await Payment.findById(paymentId);
+    const pay = await Payment.findOne({ _id: paymentId, customer: req.auth.id });
     if (!pay) throw new ApiError(404, 'Payment not found');
+
+    if (pay.status === 'paid') {
+      return res.json({ success: true, message: 'Payment already verified' });
+    }
+
+    if (pay.providerOrderId && pay.providerOrderId !== razorpay_order_id) {
+      throw new ApiError(400, 'Payment order does not match');
+    }
+
+    if (pay.metadata?.walletDeducted > 0 && !pay.metadata?.walletDebited) {
+      await debitWallet({
+        customerId: req.auth.id,
+        amount: pay.metadata.walletDeducted,
+        paymentId: pay._id,
+        description: pay.metadata?.type === 'extra_milk'
+          ? 'Milk Wallet discount on extra milk'
+          : 'Milk Wallet discount on subscription'
+      });
+      pay.set('metadata', { ...pay.metadata, walletDebited: true });
+    }
     
     pay.status = 'paid';
+    pay.providerOrderId = razorpay_order_id;
+    pay.providerPaymentId = razorpay_payment_id;
+    pay.paidAt = new Date();
     await pay.save();
-
-    if (pay.metadata && pay.metadata.walletDeducted > 0) {
-      const deduction = pay.metadata.walletDeducted;
-      await User.findByIdAndUpdate(req.auth.id, { $inc: { walletBalance: -deduction } });
-      await WalletTransaction.create({
-        customer: req.auth.id, amount: deduction, type: 'debit', description: 'Partial Payment', referenceId: pay._id
-      });
-    }
     
     if (pay.metadata?.type === 'extra_milk') {
       // It's an extra milk delivery payment
@@ -317,6 +520,7 @@ r.post('/payment/verify', async (req, res) => {
 });
 
 r.get('/subscriptions',async(req,res)=>res.json({success:true,data:await Subscription.find({customer:req.auth.id, cycle: { $ne: 'onetime' }, status: { $ne: 'pending_payment' }}).populate('product').sort('-createdAt')}));
+r.get('/all-orders',async(req,res)=>res.json({success:true,data:await Subscription.find({customer:req.auth.id, status: { $ne: 'pending_payment' }}).populate('product').sort('-createdAt')}));
 r.patch('/subscriptions/:id/pause', async (req, res) => {
   const { pauseFrom } = req.body;
   if (!pauseFrom) throw new ApiError(400, 'pauseFrom date is required');
@@ -367,11 +571,6 @@ r.patch('/subscriptions/:id/resume', async (req, res) => {
   }
 
   res.json({ success: true });
-});
-r.patch('/subscriptions/:id/auto-renew',async(req,res)=>res.json({success:true,data:await Subscription.findOneAndUpdate({_id:req.params.id,customer:req.auth.id},{$set:{autoRenew:req.body.autoRenew}},{new:true})}));
-r.post('/subscriptions/:id/renew', async(req,res) => {
-  const sub = await Subscription.findOneAndUpdate({_id:req.params.id, customer:req.auth.id}, {$set: {status: 'active', startDate: new Date(Date.now() + 86400000)}}, {new: true});
-  res.json({ success: true, data: sub });
 });
 
 r.delete('/subscriptions/:id', async (req, res) => {

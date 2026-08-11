@@ -4,6 +4,7 @@ import { env } from '../config/env.js';
 import { ApiError } from '../utils/apiError.js';
 const client=env.razorpayKeyId&&env.razorpayKeySecret?new Razorpay({key_id:env.razorpayKeyId,key_secret:env.razorpayKeySecret}):null;
 export async function createProviderOrder(amount,receipt){
+ if(!Number.isFinite(Number(amount)) || Number(amount)<=0) throw new ApiError(400,'Invalid payment amount');
  if(!client) return {id:`demo_order_${Date.now()}`,amount:Math.round(amount*100),currency:'INR',demo:true};
  return client.orders.create({amount:Math.round(amount*100),currency:'INR',receipt});
 }

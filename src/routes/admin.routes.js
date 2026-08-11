@@ -10,10 +10,16 @@ import { Category } from '../models/Category.js';
 import { SystemConfig } from '../models/SystemConfig.js';
 import { FarmerProfile } from '../models/FarmerProfile.js';
 import { MilkSale } from '../models/MilkSale.js';
+import { ContactInquiry } from '../models/ContactInquiry.js';
 import { upload } from '../config/cloudinary.js';
 import { generateRemainingDeliveries } from '../services/deliveryService.js';
 
 const r=Router();r.use(requireAuth('admin'));
+
+r.get('/me', async (req, res) => {
+  const user = await User.findById(req.auth.id).select('-passwordHash');
+  res.json({ success: true, data: user });
+});
 
 r.get('/dashboard', async (req, res) => {
   const todayStart = new Date();
@@ -139,6 +145,9 @@ r.post('/products', upload.array('images', 5), async(req,res)=>{
   if (typeof productData.variants === 'string') {
     try { productData.variants = JSON.parse(productData.variants); } catch(e){}
   }
+  if (typeof productData.frequencies === 'string') {
+    try { productData.frequencies = JSON.parse(productData.frequencies); } catch(e){}
+  }
   ['isFeatured', 'isBestSeller', 'allowSubscription', 'allowCustomBulk', 'isActive'].forEach(field => {
     if (productData[field] === 'true') productData[field] = true;
     if (productData[field] === 'false') productData[field] = false;
@@ -154,6 +163,9 @@ r.patch('/products/:id', upload.array('images', 5), async(req,res)=>{
   }
   if (typeof updateData.variants === 'string') {
     try { updateData.variants = JSON.parse(updateData.variants); } catch(e){}
+  }
+  if (typeof updateData.frequencies === 'string') {
+    try { updateData.frequencies = JSON.parse(updateData.frequencies); } catch(e){}
   }
   ['isFeatured', 'isBestSeller', 'allowSubscription', 'allowCustomBulk', 'isActive'].forEach(field => {
     if (updateData[field] === 'true') updateData[field] = true;
@@ -433,7 +445,7 @@ r.get('/config/milk-rate', async (req, res) => {
 
 r.put('/config/milk-rate', async (req, res) => {
   const { rate } = req.body;
-  if (!rate || isNaN(rate)) return res.status(400).json({ success: false, message: 'Valid rate is required' });
+  if (!rate || isNaN(rate)) return res.status(400).json({ success: false, message: 'Invalid rate' });
   
   let rateConfig = await SystemConfig.findOne({ key: 'CURRENT_MILK_RATE' });
   if (!rateConfig) {
@@ -443,6 +455,21 @@ r.put('/config/milk-rate', async (req, res) => {
     await rateConfig.save();
   }
   res.json({ success: true, data: rateConfig.value });
+});
+
+r.put('/config/:key', async (req, res) => {
+  const { value, description } = req.body;
+  const key = req.params.key;
+  
+  let config = await SystemConfig.findOne({ key });
+  if (!config) {
+    config = await SystemConfig.create({ key, value, description });
+  } else {
+    config.value = value;
+    if (description) config.description = description;
+    await config.save();
+  }
+  res.json({ success: true, data: config.value });
 });
 
 r.get('/farmers', async (req, res) => {
@@ -528,6 +555,25 @@ r.put('/milk-collections/:id/verify', async (req, res) => {
   await sale.save();
   
   res.json({ success: true, data: sale });
+});
+
+r.get('/contacts', async (req, res) => {
+  const contacts = await ContactInquiry.find().sort('-createdAt');
+  res.json({ success: true, data: contacts });
+});
+
+r.patch('/contacts/:id', async (req, res) => {
+  const { status } = req.body;
+  if (!['new', 'read', 'resolved'].includes(status)) {
+    return res.status(400).json({ success: false, message: 'Invalid status' });
+  }
+  const contact = await ContactInquiry.findByIdAndUpdate(
+    req.params.id,
+    { status },
+    { new: true }
+  );
+  if (!contact) return res.status(404).json({ success: false, message: 'Inquiry not found' });
+  res.json({ success: true, data: contact });
 });
 
 export default r;

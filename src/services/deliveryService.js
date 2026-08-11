@@ -9,7 +9,14 @@ export async function generateDeliveriesForPayment(paymentId, force = false){
  const sub=await Subscription.findById(payment.subscription).populate('customer product');
  if(!sub) return [];
   const cycle = sub.cycle || 'monthly';
-  const days = cycle === 'daily' ? 1 : cycle === 'weekly' ? 7 : cycle === 'onetime' ? 1 : 30;
+  let days = cycle === 'daily' ? 1 : cycle === 'weekly' ? 7 : cycle === 'onetime' ? 1 : 30;
+  if (sub.endDate && sub.startDate) {
+    const start = new Date(sub.startDate);
+    const end = new Date(sub.endDate);
+    start.setHours(0,0,0,0);
+    end.setHours(0,0,0,0);
+    days = Math.max(1, Math.round((end - start) / (1000 * 60 * 60 * 24)) + 1);
+  }
  const address=sub.customer.addresses.id(sub.addressId);
  const docs=[];
   for(let i=0;i<days;i++){

@@ -8,6 +8,13 @@ const variantSchema = new mongoose.Schema({
   stockQuantity: { type: Number, default: 0, min: 0 }
 });
 
+const frequencySchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  subtitle: { type: String },
+  badge: { type: String },
+  days: { type: Number, required: true }
+});
+
 const schema = new mongoose.Schema({
   name: { type: String, required: true },
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: false },
@@ -30,9 +37,11 @@ const schema = new mongoose.Schema({
   isBestSeller: { type: Boolean, default: false },
   allowSubscription: { type: Boolean, default: true },
   allowCustomBulk: { type: Boolean, default: false },
+  allowCustomDate: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
   
   variants: [variantSchema],
+  frequencies: [frequencySchema],
   
   // Legacy fields for backwards compatibility with existing frontend components
   colorTheme: { type: String, default: 'bg-white' },

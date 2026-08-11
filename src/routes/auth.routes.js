@@ -4,6 +4,7 @@ import { User } from '../models/User.js';
 import { env } from '../config/env.js';
 import { signToken } from '../utils/token.js';
 import { ApiError } from '../utils/apiError.js';
+import { requireAuth } from '../middleware/auth.js';
 
 const r=Router();
 
@@ -41,6 +42,21 @@ r.post('/firebase-sync', async (req, res) => {
   }
   
   res.json({ success: true, token: signToken({ id: u.id, role: u.role }), user: u });
+});
+
+r.delete('/account', requireAuth(), async (req, res) => {
+  const user = await User.findById(req.auth.id);
+  if (!user) throw new ApiError(404, 'User not found');
+  
+  // Soft delete logic: anonymize personal data to prevent future logins and preserve DB integrity
+  const deletedPrefix = `deleted_${Date.now()}_`;
+  user.status = 'deleted';
+  if (user.email) user.email = `${deletedPrefix}${user.email}`;
+  if (user.phone) user.phone = `${deletedPrefix}${user.phone}`;
+  user.fcmTokens = [];
+  
+  await user.save();
+  res.json({ success: true, message: 'Account deleted successfully' });
 });
 
 export default r;
