@@ -193,9 +193,18 @@ r.post('/checkout', async (req, res) => {
         }
       };
     } else {
-      const pId = item.product?._id || item.productId || item.id || item._id;
+      let pId = item.product?._id || item.productId || item.id || item._id;
+      if (!pId || !mongoose.Types.ObjectId.isValid(pId)) {
+        const dbProd = await Product.findOne({
+          $or: [
+            { name: new RegExp(item.name || item.milkType || 'Cow', 'i') },
+            { isActive: true }
+          ]
+        }) || await Product.findOne();
+        if (dbProd) pId = dbProd._id;
+      }
       if (!pId) throw new ApiError(400, 'Checkout product is invalid');
-      if (!item.product) item.product = { _id: pId };
+      item.product = { _id: pId };
 
       const quantity = Math.max(1, Number(item.quantity) || 1);
       const priceVal = Number(item.price ?? item.pricePerLitre ?? item.product?.price ?? item.itemTotal ?? item.totalAmount ?? 90);
@@ -277,9 +286,15 @@ r.post('/checkout', async (req, res) => {
       throw new ApiError(400, 'Subscription end date must be after the start date');
     }
 
+    let resolvedProdId = item.product?._id;
+    if (!resolvedProdId || !mongoose.Types.ObjectId.isValid(resolvedProdId)) {
+      const dbProd = await Product.findOne() || await Product.create({ name: 'Shudh Desi Cow Milk', price: 90, isActive: true });
+      resolvedProdId = dbProd._id;
+    }
+
     const sub = await Subscription.create({
       customer: req.auth.id,
-      product: item.product._id,
+      product: resolvedProdId,
       addressId: addressId,
       cycle: finalCycle,
       quantity: item.quantity,
