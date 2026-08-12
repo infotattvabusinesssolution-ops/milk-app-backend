@@ -23,7 +23,7 @@ jobs:
             echo "Starting Milk backend deployment..."
             cd /var/www/milk-app-backend
             echo "Fetching latest code..."
-            git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/infotattvabusinessolution-ops/milk-app-backend.git
+            git remote set-url origin https://x-access-token:${{ secrets.DEPLOY_TOKEN }}@github.com/infotattvabusinessolution-ops/milk-app-backend.git
             git fetch origin
             echo "Updating production code..."
             git reset --hard origin/main
