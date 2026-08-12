@@ -428,26 +428,6 @@ r.post('/subscriptions/:id/extra-milk', async (req, res) => {
   if (Number.isNaN(targetDate.getTime())) throw new ApiError(400, 'Invalid delivery date');
   targetDate.setHours(0,0,0,0);
 
-  let sub;
-  if (req.params.id && req.params.id !== 'active' && mongoose.Types.ObjectId.isValid(req.params.id)) {
-    sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id });
-  }
-  if (!sub) {
-    sub = await Subscription.findOne({ customer: req.auth.id, status: 'active' });
-  }
-  if (!sub) {
-    sub = await Subscription.findOne({ customer: req.auth.id });
-  }
-  if (!sub) {
-    sub = await Subscription.create({
-      customer: req.auth.id,
-      status: 'active',
-      cycle: 'daily',
-      quantity: requestedQuantity,
-      startDate: new Date()
-    });
-  }
-
   let product;
   if (mongoose.Types.ObjectId.isValid(productId)) {
     product = await Product.findById(productId);
@@ -461,8 +441,34 @@ r.post('/subscriptions/:id/extra-milk', async (req, res) => {
   if (!product) {
     product = await Product.create({
       name: 'Shudh Desi Cow Milk',
+      price: 90,
       pricePerUnit: 90,
       isActive: true
+    });
+  }
+
+  const u = await User.findById(req.auth.id);
+  const resolvedAddrId = req.body.addressId || req.body.address?.id || req.body.address?._id || u.addresses?.[0]?._id;
+
+  let sub;
+  if (req.params.id && req.params.id !== 'active' && mongoose.Types.ObjectId.isValid(req.params.id)) {
+    sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id });
+  }
+  if (!sub) {
+    sub = await Subscription.findOne({ customer: req.auth.id, status: 'active' });
+  }
+  if (!sub) {
+    sub = await Subscription.findOne({ customer: req.auth.id });
+  }
+  if (!sub) {
+    sub = await Subscription.create({
+      customer: req.auth.id,
+      product: product._id,
+      addressId: resolvedAddrId,
+      status: 'active',
+      cycle: 'daily',
+      quantity: requestedQuantity,
+      startDate: new Date()
     });
   }
 
