@@ -799,11 +799,13 @@ r.post('/wallet/topup/verify', async (req, res) => {
 
 r.delete('/me', async (req, res) => {
   const customerId = req.auth.id;
-  await Subscription.deleteMany({ customer: customerId });
-  await Delivery.deleteMany({ customer: customerId });
-  await Payment.deleteMany({ customer: customerId });
-  await WalletTransaction.deleteMany({ customer: customerId });
-  await User.findByIdAndDelete(customerId);
+  console.log(`[DELETE /customer/me] 🗑️ Deleting account and all data for customer ID: ${customerId}`);
+  const subsDel = await Subscription.deleteMany({ customer: customerId });
+  const delivDel = await Delivery.deleteMany({ customer: customerId });
+  const payDel = await Payment.deleteMany({ customer: customerId });
+  const txnDel = await WalletTransaction.deleteMany({ customer: customerId });
+  const userDel = await User.findByIdAndDelete(customerId);
+  console.log(`[DELETE /customer/me] ✅ Deleted ${subsDel.deletedCount} subscriptions, ${delivDel.deletedCount} deliveries, ${payDel.deletedCount} payments, ${txnDel.deletedCount} transactions for user ${customerId}`);
   res.json({ success: true, message: 'Account deleted successfully' });
 });
 
