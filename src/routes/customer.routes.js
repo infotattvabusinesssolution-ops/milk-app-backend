@@ -65,7 +65,25 @@ r.post('/addresses',async(req,res)=>{const u=await User.findById(req.auth.id);u.
 r.put('/addresses/:id',async(req,res)=>{const u=await User.findById(req.auth.id);const a=u.addresses.id(req.params.id);if(!a)throw new ApiError(404,'Address not found');a.set(req.body);await u.save();res.json({success:true,data:a});});
 r.delete('/addresses/:id',async(req,res)=>{const u=await User.findById(req.auth.id);const a=u.addresses.id(req.params.id);if(!a)throw new ApiError(404,'Address not found');u.addresses.pull(req.params.id);await u.save();res.json({success:true});});
 r.get('/products',async(req,res)=>res.json({success:true,data:await Product.find({isActive:true})}));
-r.post('/subscriptions',async(req,res)=>{const u=await User.findById(req.auth.id);if(!u.addresses.id(req.body.addressId))throw new ApiError(400,'Invalid address');const s=await Subscription.create({...req.body,customer:u._id});res.status(201).json({success:true,data:s});});
+r.post('/subscriptions', async (req, res) => {
+  const u = await User.findById(req.auth.id);
+  if (req.body.addressId && u.addresses?.id && !u.addresses.id(req.body.addressId)) {
+    throw new ApiError(400, 'Invalid address');
+  }
+
+  let resolvedProdId = req.body.product?._id || req.body.product || req.body.productId;
+  if (!resolvedProdId || !mongoose.Types.ObjectId.isValid(resolvedProdId)) {
+    const dbProd = await Product.findOne({ isActive: true }) || await Product.findOne() || await Product.create({ name: 'Shudh Desi Cow Milk', price: 90, isActive: true });
+    resolvedProdId = dbProd._id;
+  }
+
+  const s = await Subscription.create({
+    ...req.body,
+    product: resolvedProdId,
+    customer: u._id
+  });
+  res.status(201).json({ success: true, data: s });
+});
 
 r.post('/checkout/calculate', async (req, res) => {
   let { items, addressId, addressLat, addressLng, useWallet } = req.body;
@@ -286,9 +304,9 @@ r.post('/checkout', async (req, res) => {
       throw new ApiError(400, 'Subscription end date must be after the start date');
     }
 
-    let resolvedProdId = item.product?._id;
+    let resolvedProdId = item.product?._id || item.product || item.productId;
     if (!resolvedProdId || !mongoose.Types.ObjectId.isValid(resolvedProdId)) {
-      const dbProd = await Product.findOne() || await Product.create({ name: 'Shudh Desi Cow Milk', price: 90, isActive: true });
+      const dbProd = await Product.findOne({ isActive: true }) || await Product.findOne() || await Product.create({ name: 'Shudh Desi Cow Milk', price: 90, isActive: true });
       resolvedProdId = dbProd._id;
     }
 
