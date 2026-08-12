@@ -193,7 +193,10 @@ r.post('/checkout', async (req, res) => {
         }
       };
     } else {
-      if (!item.product?._id) throw new ApiError(400, 'Checkout product is invalid');
+      const pId = item.product?._id || item.productId || item.id || item._id;
+      if (!pId) throw new ApiError(400, 'Checkout product is invalid');
+      if (!item.product) item.product = { _id: pId };
+
       const quantity = Number(item.quantity);
       const itemTotal = item.totalAmount !== undefined && item.totalAmount !== null
         ? Number(item.totalAmount)
@@ -203,6 +206,7 @@ r.post('/checkout', async (req, res) => {
         throw new ApiError(400, 'Checkout item has invalid quantity or pricing');
       }
 
+      validatedItem.product = item.product;
       validatedItem.quantity = quantity;
       validatedItem.totalAmount = roundMoney(itemTotal);
     }
