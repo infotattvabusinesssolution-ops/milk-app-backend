@@ -708,7 +708,26 @@ r.delete('/subscriptions/:id', async (req, res) => {
 });
 
 r.get('/deliveries',async(req,res)=>res.json({success:true,data:await Delivery.find({customer:req.auth.id}).populate('product').populate('partner','name phone').sort('deliveryDate')}));
-r.get('/orders',async(req,res)=>res.json({success:true,data:await Delivery.find({customer:req.auth.id}).populate('product').populate('partner','name phone').populate('subscription', 'cycle').sort('-createdAt')}));
+r.get('/orders', async (req, res) => {
+  const deliveries = await Delivery.find({ customer: req.auth.id })
+    .populate('product')
+    .populate('partner', 'name phone')
+    .populate('subscription', 'cycle status totalAmount')
+    .populate('payment', 'amount status metadata')
+    .sort('-createdAt')
+    .lean();
+
+  if (deliveries && deliveries.length > 0) {
+    return res.json({ success: true, data: deliveries });
+  }
+
+  const subscriptions = await Subscription.find({ customer: req.auth.id, status: { $ne: 'pending_payment' } })
+    .populate('product')
+    .sort('-createdAt')
+    .lean();
+
+  res.json({ success: true, data: subscriptions });
+});
 r.get('/payments',async(req,res)=>res.json({success:true,data:await Payment.find({customer:req.auth.id}).sort('-createdAt')}));
 
 r.get('/wallet/transactions', async (req, res) => {
