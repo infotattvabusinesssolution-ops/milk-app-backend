@@ -797,4 +797,14 @@ r.post('/wallet/topup/verify', async (req, res) => {
   }
 });
 
+r.delete('/me', async (req, res) => {
+  const customerId = req.auth.id;
+  await Subscription.deleteMany({ customer: customerId });
+  await Delivery.deleteMany({ customer: customerId });
+  await Payment.deleteMany({ customer: customerId });
+  await WalletTransaction.deleteMany({ customer: customerId });
+  await User.findByIdAndDelete(customerId);
+  res.json({ success: true, message: 'Account deleted successfully' });
+});
+
 export default r;

@@ -51,8 +51,10 @@ r.get('/config/:key', async (req, res) => {
     'availableStates': 'Uttar Pradesh, Delhi, Maharashtra, Karnataka, Haryana, Punjab, Rajasthan, Madhya Pradesh',
     'subscriptionConfig': { minDays: 7, maxDays: 90, discountPercent: 5 },
     'footerContact': { phone: '+91 9876543210', email: 'support@milkmen.online', address: '123 Dairy Road, Kanpur, UP, 208001' },
+    'helpSupport': { phone: '+91 9876543210', email: 'support@milkmen.online', hours: 'Mon - Sun, 6:00 AM - 8:00 PM', address: '123 Dairy Road, Kanpur, UP, 208001' },
     'aboutUs': 'We provide fresh, pure, and unadulterated milk directly from our farms to your doorstep every morning.',
-    'privacyPolicy': 'Your privacy is important to us. We securely store your data and do not share it with third parties.',
+    'privacyPolicy': 'Your privacy is important to us. We collect minimal information (name, phone, delivery address) necessary to fulfill your milk subscription orders. All personal data is encrypted and securely stored. We never sell or share your information with third-party advertisers.',
+    'termsAndConditions': 'Welcome to Milkmen! By subscribing to our milk delivery service, you agree to place orders before midnight for next-day delivery. Wallet balances can be used for extra milk and recurring plans. Pausing subscriptions preserves your remaining delivery balance.',
     'faqs': [
       { q: 'What time do you deliver?', a: 'We deliver between 5:00 AM and 7:00 AM every day.' },
       { q: 'Is the milk pasteurized?', a: 'No, we provide fresh raw A2 milk. We recommend boiling it before consumption.' }
