@@ -1,0 +1,47 @@
+name: Deploy Milk Backend
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy backend to VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+          script: |
+            set -e
+
+            echo "Starting Milk backend deployment..."
+
+            cd /var/www/milk-app-backend
+
+            echo "Fetching latest code..."
+            git fetch origin
+
+            echo "Updating production code..."
+            git reset --hard origin/main
+
+            echo "Installing dependencies..."
+            npm install
+
+            echo "Restarting PM2..."
+            pm2 restart milk-backend
+
+            echo "Saving PM2..."
+            pm2 save
+
+            echo "Deployment completed successfully!"
+
+            pm2 status milk-backend
