@@ -31,7 +31,7 @@ jobs:
             npm install
             echo "Restarting PM2..."
             pm2 restart milk-backend
-            echo "Saving PM2..."
+            echo "Saving PM2.."
             pm2 save
             echo "Deployment completed successfully!"
             pm2 status milk-backend
