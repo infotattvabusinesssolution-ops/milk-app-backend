@@ -197,10 +197,13 @@ r.post('/checkout', async (req, res) => {
       if (!pId) throw new ApiError(400, 'Checkout product is invalid');
       if (!item.product) item.product = { _id: pId };
 
-      const quantity = Number(item.quantity);
-      const itemTotal = item.totalAmount !== undefined && item.totalAmount !== null
+      const quantity = Math.max(1, Number(item.quantity) || 1);
+      const priceVal = Number(item.price ?? item.pricePerLitre ?? item.product?.price ?? item.itemTotal ?? item.totalAmount ?? 90);
+      const itemTotal = (item.totalAmount !== undefined && item.totalAmount !== null)
         ? Number(item.totalAmount)
-        : Number(item.price) * quantity;
+        : (item.itemTotal !== undefined && item.itemTotal !== null)
+          ? Number(item.itemTotal)
+          : priceVal * quantity;
 
       if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(itemTotal) || itemTotal <= 0) {
         throw new ApiError(400, 'Checkout item has invalid quantity or pricing');
@@ -208,6 +211,7 @@ r.post('/checkout', async (req, res) => {
 
       validatedItem.product = item.product;
       validatedItem.quantity = quantity;
+      validatedItem.price = priceVal;
       validatedItem.totalAmount = roundMoney(itemTotal);
     }
 
