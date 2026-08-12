@@ -23,7 +23,7 @@ jobs:
           script: |
             set -e
 
-            echo "Starting Milk backend deployment..."
+            echo "Starting Milk backend deployment...."
 
             cd /var/www/milk-app-backend
 
