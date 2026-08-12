@@ -576,4 +576,29 @@ r.patch('/contacts/:id', async (req, res) => {
   res.json({ success: true, data: contact });
 });
 
+// SYSTEM CONFIG MANAGEMENT FOR ADMIN (Privacy Policy, Terms & Conditions, Help & Support, etc.)
+r.get('/config', async (req, res) => {
+  const configs = await SystemConfig.find();
+  res.json({ success: true, data: configs });
+});
+
+r.get('/config/:key', async (req, res) => {
+  const config = await SystemConfig.findOne({ key: req.params.key });
+  if (config) return res.json({ success: true, data: config.value });
+  res.status(404).json({ success: false, message: 'Config not found' });
+});
+
+r.put('/config/:key', async (req, res) => {
+  const { value, description } = req.body;
+  if (value === undefined) return res.status(400).json({ success: false, message: 'Value is required' });
+
+  const config = await SystemConfig.findOneAndUpdate(
+    { key: req.params.key },
+    { key: req.params.key, value, ...(description ? { description } : {}) },
+    { upsert: true, new: true }
+  );
+
+  res.json({ success: true, data: config.value });
+});
+
 export default r;
