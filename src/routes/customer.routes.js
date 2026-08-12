@@ -480,8 +480,6 @@ r.post('/subscriptions/:id/extra-milk', async (req, res) => {
   }
 
   const totalAmount = roundMoney(unitPrice * requestedQuantity);
-  
-  const u = await User.findById(req.auth.id);
   let walletDeduction = 0;
   
   if (useWallet === true) {
