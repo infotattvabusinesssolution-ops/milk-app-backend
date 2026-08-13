@@ -327,16 +327,22 @@ r.post('/checkout', async (req, res) => {
   const createdSubscriptions = [];
   
   for (const item of items) {
-    const isSub = item.purchaseType === 'subscription';
-    const cycle = isSub ? (item.plan?.billingCycle || (item.plan?.frequency?.toLowerCase() === 'daily' ? 'daily' : 'weekly')) : 'onetime';
+    const reqFreq = (item.deliveryFrequency || req.body.deliveryFrequency || item.plan?.frequency || '').toString().toLowerCase();
 
-    let finalCycle = (item.plan?.cycle || cycle).toLowerCase();
-    if (finalCycle.includes('single day') || finalCycle === 'onetime') {
-      finalCycle = 'onetime';
-    } else if (finalCycle.includes('custom')) {
-      finalCycle = 'custom';
-    } else if (!['daily', 'weekly', 'monthly', 'onetime', 'custom'].includes(finalCycle)) {
-      finalCycle = 'onetime';
+    let finalCycle = 'onetime';
+    if (reqFreq.includes('month')) {
+      finalCycle = 'monthly';
+    } else if (reqFreq.includes('week')) {
+      finalCycle = 'weekly';
+    } else if (reqFreq.includes('daily') || reqFreq.includes('everyday')) {
+      finalCycle = 'daily';
+    } else if (item.plan?.cycle || item.plan?.billingCycle) {
+      finalCycle = (item.plan?.cycle || item.plan?.billingCycle).toLowerCase();
+      if (finalCycle.includes('single day') || finalCycle === 'onetime') {
+        finalCycle = 'onetime';
+      }
+    } else if (item.purchaseType === 'subscription') {
+      finalCycle = 'weekly';
     }
 
     const rawStartDate = item.startDate || item.plan?.startDate;
@@ -815,24 +821,46 @@ r.delete('/subscriptions/:id', async (req, res) => {
 
 r.get('/deliveries',async(req,res)=>res.json({success:true,data:await Delivery.find({customer:req.auth.id}).populate('product').populate('partner','name phone').sort('deliveryDate')}));
 r.get('/orders', async (req, res) => {
-  const deliveries = await Delivery.find({ customer: req.auth.id })
-    .populate('product')
-    .populate('partner', 'name phone')
-    .populate('subscription', 'cycle status totalAmount')
-    .populate('payment', 'amount status metadata')
-    .sort('-createdAt')
-    .lean();
+  const [deliveries, subscriptions] = await Promise.all([
+    Delivery.find({ customer: req.auth.id })
+      .populate('product')
+      .populate('partner', 'name phone')
+      .populate('subscription', 'cycle status totalAmount')
+      .populate('payment', 'amount status metadata')
+      .sort('-createdAt')
+      .lean(),
+    Subscription.find({ customer: req.auth.id, status: { $ne: 'pending_payment' } })
+      .populate('product')
+      .sort('-createdAt')
+      .lean()
+  ]);
 
-  if (deliveries && deliveries.length > 0) {
-    return res.json({ success: true, data: deliveries });
+  const combined = [];
+  const addedSubIds = new Set();
+
+  for (const sub of subscriptions) {
+    combined.push({
+      ...sub,
+      type: 'subscription',
+      cycle: sub.cycle || 'weekly',
+      quantity: sub.quantity || 1
+    });
+    if (sub._id) addedSubIds.add(sub._id.toString());
   }
 
-  const subscriptions = await Subscription.find({ customer: req.auth.id, status: { $ne: 'pending_payment' } })
-    .populate('product')
-    .sort('-createdAt')
-    .lean();
+  for (const del of deliveries) {
+    const subRefId = del.subscription?._id ? del.subscription._id.toString() : del.subscription?.toString();
+    if (!subRefId || !addedSubIds.has(subRefId)) {
+      combined.push({
+        ...del,
+        type: del.isExtra ? 'extra_milk' : 'delivery'
+      });
+    }
+  }
 
-  res.json({ success: true, data: subscriptions });
+  combined.sort((a, b) => new Date(b.createdAt || b.deliveryDate || 0) - new Date(a.createdAt || a.deliveryDate || 0));
+
+  res.json({ success: true, data: combined });
 });
 r.get('/payments',async(req,res)=>res.json({success:true,data:await Payment.find({customer:req.auth.id}).sort('-createdAt')}));
 
