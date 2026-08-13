@@ -371,9 +371,8 @@ r.post('/checkout', async (req, res) => {
       resolvedProdId = dbProd._id;
     }
 
-    const subDeliveryFreq = (item.deliveryFrequency === 'selected_days' || (item.selectedDays && item.selectedDays.length > 0))
-      ? 'selected_days'
-      : 'everyday';
+    const itemDeliveryCharge = items.length > 0 ? roundMoney(deliveryInfo.charge / items.length) : 0;
+    const finalSubTotal = roundMoney((item.totalAmount || 0) + itemDeliveryCharge);
 
     const sub = await Subscription.create({
       customer: req.auth.id,
@@ -385,7 +384,7 @@ r.post('/checkout', async (req, res) => {
       selectedDays: item.selectedDays || [],
       startDate: normalizedStartDate,
       endDate: normalizedEndDate,
-      totalAmount: item.totalAmount,
+      totalAmount: finalSubTotal,
       status: paymentMethod === 'cod' && payableAmount > 0 ? 'active' : 'pending_payment'
     });
     createdSubscriptions.push(sub);
@@ -825,7 +824,7 @@ r.delete('/subscriptions/:id', async (req, res) => {
 
 r.get('/deliveries',async(req,res)=>res.json({success:true,data:await Delivery.find({customer:req.auth.id}).populate('product').populate('partner','name phone').sort('deliveryDate')}));
 r.get('/orders', async (req, res) => {
-  const [deliveries, subscriptions] = await Promise.all([
+  const [deliveries, subscriptions, payments] = await Promise.all([
     Delivery.find({ customer: req.auth.id })
       .populate('product')
       .populate('partner', 'name phone')
@@ -836,18 +835,22 @@ r.get('/orders', async (req, res) => {
     Subscription.find({ customer: req.auth.id, status: { $ne: 'pending_payment' } })
       .populate('product')
       .sort('-createdAt')
-      .lean()
+      .lean(),
+    Payment.find({ customer: req.auth.id }).sort('-createdAt').lean()
   ]);
 
   const combined = [];
   const addedSubIds = new Set();
 
   for (const sub of subscriptions) {
+    const matchingPay = payments.find(p => p.subscription?.toString() === sub._id?.toString());
     combined.push({
       ...sub,
       type: 'subscription',
       cycle: sub.cycle || 'weekly',
-      quantity: sub.quantity || 1
+      quantity: sub.quantity || 1,
+      payment: matchingPay || null,
+      totalAmount: matchingPay?.amount || sub.totalAmount
     });
     if (sub._id) addedSubIds.add(sub._id.toString());
   }
