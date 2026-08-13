@@ -53,6 +53,59 @@ const debitWallet = async ({ customerId, amount, paymentId, description }) => {
   return updatedUser;
 };
 
+const resolveCustomerAddress = async (user, addressId, addressBody) => {
+  if (!user) return null;
+
+  // 1. Check if addressId is a valid ObjectId and exists in user.addresses
+  if (addressId && mongoose.Types.ObjectId.isValid(addressId) && user.addresses?.id && user.addresses.id(addressId)) {
+    return addressId;
+  }
+
+  // 2. Check if addressBody contains a valid ObjectId _id or id
+  if (addressBody && typeof addressBody === 'object') {
+    const rawId = addressBody._id || addressBody.id || addressBody.addressId;
+    if (rawId && mongoose.Types.ObjectId.isValid(rawId) && user.addresses?.id && user.addresses.id(rawId)) {
+      return rawId;
+    }
+
+    // 3. Try matching existing address by building/area
+    const buildingStr = (addressBody.building || addressBody.address || '').toString().trim();
+    const areaStr = (addressBody.area || '').toString().trim();
+    if (user.addresses && user.addresses.length > 0) {
+      const match = user.addresses.find(a => 
+        (buildingStr && a.building && a.building.trim().toLowerCase() === buildingStr.toLowerCase()) ||
+        (areaStr && a.area && a.area.trim().toLowerCase() === areaStr.toLowerCase())
+      );
+      if (match) return match._id;
+    }
+
+    // 4. Auto-save addressBody to user's addresses subdocuments
+    const newAddr = {
+      name: (addressBody.name || user.name || 'Delivery Address').toString(),
+      phone: (addressBody.phone || user.phone || '').toString(),
+      building: buildingStr || 'Delivery Location',
+      area: areaStr,
+      landmark: (addressBody.landmark || '').toString(),
+      city: (addressBody.city || 'Kanpur').toString(),
+      state: (addressBody.state || 'Uttar Pradesh').toString(),
+      pincode: (addressBody.pincode || '208001').toString(),
+      label: (addressBody.label || 'Home Address').toString(),
+      isDefault: !user.addresses || user.addresses.length === 0
+    };
+    user.addresses = user.addresses || [];
+    user.addresses.push(newAddr);
+    await user.save();
+    return user.addresses.at(-1)._id;
+  }
+
+  // 5. Fallback to user's first address if available
+  if (user.addresses && user.addresses.length > 0) {
+    return user.addresses[0]._id;
+  }
+
+  return null;
+};
+
 r.get('/me', async (req, res) => {
   const user = await User.findById(req.auth.id).lean();
   const activeSub = await Subscription.findOne({ customer: req.auth.id, status: 'active', cycle: { $ne: 'onetime' } });
@@ -67,9 +120,9 @@ r.delete('/addresses/:id',async(req,res)=>{const u=await User.findById(req.auth.
 r.get('/products',async(req,res)=>res.json({success:true,data:await Product.find({isActive:true})}));
 r.post('/subscriptions', async (req, res) => {
   const u = await User.findById(req.auth.id);
-  if (req.body.addressId && u.addresses?.id && !u.addresses.id(req.body.addressId)) {
-    throw new ApiError(400, 'Invalid address');
-  }
+  const resolvedAddrId = await resolveCustomerAddress(u, req.body.addressId, req.body.address);
+  if (!resolvedAddrId) throw new ApiError(400, 'Invalid address. Please provide or select a valid delivery address.');
+  req.body.addressId = resolvedAddrId;
 
   let resolvedProdId = req.body.product?._id || req.body.product || req.body.productId;
   if (!resolvedProdId || !mongoose.Types.ObjectId.isValid(resolvedProdId)) {
@@ -171,7 +224,9 @@ r.post('/checkout', async (req, res) => {
   }
 
   const u = await User.findById(req.auth.id);
-  if (!u.addresses.id(addressId)) throw new ApiError(400, 'Invalid address');
+  const resolvedAddrId = await resolveCustomerAddress(u, addressId, req.body.address || req.body.selectedAddress);
+  if (!resolvedAddrId) throw new ApiError(400, 'Invalid address');
+  addressId = resolvedAddrId;
 
   let totalAmount = 0;
   const validatedItems = [];
@@ -672,7 +727,13 @@ r.patch('/subscriptions/:id/pause', async (req, res) => {
   const pauseDate = new Date(pauseFrom);
   pauseDate.setHours(0,0,0,0);
 
-  const sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id, status: 'active' });
+  let sub;
+  if (req.params.id && mongoose.Types.ObjectId.isValid(req.params.id)) {
+    sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id, status: 'active' });
+  }
+  if (!sub) {
+    sub = await Subscription.findOne({ customer: req.auth.id, status: 'active' });
+  }
   if (!sub) throw new ApiError(400, 'Subscription not found or already paused');
 
   const updateRes = await Subscription.updateOne(
@@ -700,7 +761,13 @@ r.patch('/subscriptions/:id/resume', async (req, res) => {
   const resumeD = resumeDate ? new Date(resumeDate) : new Date(Date.now() + 86400000);
   resumeD.setHours(0,0,0,0);
 
-  const sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id, status: 'paused' });
+  let sub;
+  if (req.params.id && mongoose.Types.ObjectId.isValid(req.params.id)) {
+    sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id, status: 'paused' });
+  }
+  if (!sub) {
+    sub = await Subscription.findOne({ customer: req.auth.id, status: 'paused' });
+  }
   if (!sub) throw new ApiError(400, 'Subscription not found or not paused');
 
   const remaining = sub.remainingDeliveries;
@@ -719,8 +786,14 @@ r.patch('/subscriptions/:id/resume', async (req, res) => {
 });
 
 r.delete('/subscriptions/:id', async (req, res) => {
-  const sub = await Subscription.findOneAndDelete({_id: req.params.id, customer: req.auth.id});
-  if(!sub) throw new ApiError(404, 'Subscription not found');
+  let sub;
+  if (req.params.id && mongoose.Types.ObjectId.isValid(req.params.id)) {
+    sub = await Subscription.findOneAndDelete({_id: req.params.id, customer: req.auth.id});
+  }
+  if (!sub) {
+    sub = await Subscription.findOneAndDelete({ customer: req.auth.id });
+  }
+  if (!sub) throw new ApiError(404, 'Subscription not found');
   await Delivery.deleteMany({ subscription: sub._id, status: { $in: ['scheduled', 'pending', 'rescheduled'] }});
   res.json({success:true});
 });
