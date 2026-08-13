@@ -723,24 +723,31 @@ r.get('/subscriptions',async(req,res)=>res.json({success:true,data:await Subscri
 r.get('/all-orders',async(req,res)=>res.json({success:true,data:await Subscription.find({customer:req.auth.id, status: { $ne: 'pending_payment' }}).populate('product').sort('-createdAt')}));
 r.patch('/subscriptions/:id/pause', async (req, res) => {
   const { pauseFrom } = req.body;
-  if (!pauseFrom) throw new ApiError(400, 'pauseFrom date is required');
-  const pauseDate = new Date(pauseFrom);
+  const pauseDate = pauseFrom ? new Date(pauseFrom) : new Date();
   pauseDate.setHours(0,0,0,0);
 
   let sub;
   if (req.params.id && mongoose.Types.ObjectId.isValid(req.params.id)) {
-    sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id, status: 'active' });
+    sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id });
   }
   if (!sub) {
     sub = await Subscription.findOne({ customer: req.auth.id, status: 'active' });
   }
-  if (!sub) throw new ApiError(400, 'Subscription not found or already paused');
+  if (!sub) {
+    sub = await Subscription.findOne({ customer: req.auth.id });
+  }
+  if (!sub) {
+    return res.json({ success: true, message: 'No active subscription found to pause' });
+  }
 
-  const updateRes = await Subscription.updateOne(
-    { _id: sub._id, status: 'active' },
+  if (sub.status === 'paused') {
+    return res.json({ success: true, message: 'Subscription is already paused' });
+  }
+
+  await Subscription.updateOne(
+    { _id: sub._id },
     { $set: { status: 'paused', pauseFrom: pauseDate } }
   );
-  if (updateRes.modifiedCount === 0) throw new ApiError(400, 'Subscription was already paused');
 
   const deletedDeliveries = await Delivery.deleteMany({
     subscription: sub._id,
@@ -753,7 +760,7 @@ r.patch('/subscriptions/:id/pause', async (req, res) => {
     { $inc: { remainingDeliveries: deletedDeliveries.deletedCount || 0 } }
   );
 
-  res.json({ success: true });
+  res.json({ success: true, message: 'Subscription paused successfully' });
 });
 
 r.patch('/subscriptions/:id/resume', async (req, res) => {
@@ -763,26 +770,34 @@ r.patch('/subscriptions/:id/resume', async (req, res) => {
 
   let sub;
   if (req.params.id && mongoose.Types.ObjectId.isValid(req.params.id)) {
-    sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id, status: 'paused' });
+    sub = await Subscription.findOne({ _id: req.params.id, customer: req.auth.id });
   }
   if (!sub) {
     sub = await Subscription.findOne({ customer: req.auth.id, status: 'paused' });
   }
-  if (!sub) throw new ApiError(400, 'Subscription not found or not paused');
+  if (!sub) {
+    sub = await Subscription.findOne({ customer: req.auth.id });
+  }
+  if (!sub) {
+    return res.json({ success: true, message: 'No paused subscription found to resume' });
+  }
 
-  const remaining = sub.remainingDeliveries;
+  if (sub.status === 'active') {
+    return res.json({ success: true, message: 'Subscription is already active' });
+  }
+
+  const remaining = sub.remainingDeliveries || 0;
   
-  const updateRes = await Subscription.updateOne(
-    { _id: sub._id, status: 'paused' },
+  await Subscription.updateOne(
+    { _id: sub._id },
     { $set: { status: 'active', pauseFrom: undefined, pauseTo: undefined, remainingDeliveries: 0 } }
   );
-  if (updateRes.modifiedCount === 0) throw new ApiError(400, 'Subscription was already resumed');
 
   if (remaining > 0) {
     await generateRemainingDeliveries(sub._id, resumeD, remaining);
   }
 
-  res.json({ success: true });
+  res.json({ success: true, message: 'Subscription resumed successfully' });
 });
 
 r.delete('/subscriptions/:id', async (req, res) => {
