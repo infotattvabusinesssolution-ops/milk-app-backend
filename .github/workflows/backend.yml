@@ -1,4 +1,4 @@
-name: Deploy Milk Backend
+﻿name: Deploy Milk Backend
 
 on:
   push:
@@ -30,7 +30,7 @@ jobs:
             echo "Fetching latest code..."
             git fetch origin
 
-            echo "Updating production code..."
+            echo "Updating production code...."
             git reset --hard origin/main
 
             echo "Installing dependencies..."
