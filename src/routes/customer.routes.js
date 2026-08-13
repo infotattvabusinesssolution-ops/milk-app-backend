@@ -371,13 +371,17 @@ r.post('/checkout', async (req, res) => {
       resolvedProdId = dbProd._id;
     }
 
+    const subDeliveryFreq = (item.deliveryFrequency === 'selected_days' || (item.selectedDays && item.selectedDays.length > 0))
+      ? 'selected_days'
+      : 'everyday';
+
     const sub = await Subscription.create({
       customer: req.auth.id,
       product: resolvedProdId,
       addressId: addressId,
       cycle: finalCycle,
       quantity: item.quantity,
-      deliveryFrequency: item.deliveryFrequency || 'everyday',
+      deliveryFrequency: subDeliveryFreq,
       selectedDays: item.selectedDays || [],
       startDate: normalizedStartDate,
       endDate: normalizedEndDate,
