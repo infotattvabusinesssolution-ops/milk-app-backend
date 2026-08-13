@@ -16,7 +16,7 @@ const seedPartners = async () => {
       { name: 'Delivery Partner 1', email: 'deliver1@gmail.com', phone: '+918888888881', role: 'partner', status: 'active', passwordHash, profilePic: 'https://i.pravatar.cc/150?u=deliver1@gmail.com' },
       { name: 'Delivery Partner 2', email: 'delivery2@gmail.com', phone: '+918888888882', role: 'partner', status: 'active', passwordHash, profilePic: 'https://i.pravatar.cc/150?u=delivery2@gmail.com' },
       { name: 'Delivery Partner 3', email: 'delivery3@gmail.com', phone: '+918888888883', role: 'partner', status: 'active', passwordHash, profilePic: 'https://i.pravatar.cc/150?u=delivery3@gmail.com' },
-      { name: 'Delivery Partner 4', email: 'delivery4@gmail.com', phone: '+918888888884', role: 'partner', status: 'active', passwordHash, profilePic: 'https://i.pravatar.cc/150?u=delivery4@gmail.com' },
+      { name: 'Delivery Partner 4', email: 'delivery4@gmail.com', phone: '+918888888885', role: 'partner', status: 'active', passwordHash, profilePic: 'https://i.pravatar.cc/150?u=delivery4@gmail.com' },
     ];
 
     for (const partnerData of partnersToCreate) {
